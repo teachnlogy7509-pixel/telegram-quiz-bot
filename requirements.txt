@@ -1,3 +1,4 @@
-python-telegram-bot==21.6
-google-genai
-PyMuPDF
+python-telegram-bot==21.10
+google-genai>=2.14.0
+apscheduler==3.10.4
+pytz
