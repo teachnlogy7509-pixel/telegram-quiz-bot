@@ -27,6 +27,8 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+# ── Admin Settings ─────────────────────────────────────────────
+ADMIN_IDS = [8043570403]
 
 # ── Help text ─────────────────────────────────────────────────────────────────
 HELP_TEXT = """
