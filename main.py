@@ -219,7 +219,7 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         return
 
-    actual = len(questions)
+actual = len(questions)
     if actual < count:
         notice = f"⚠️ Generated {actual}/{count} questions — starting with available ones.\n\n"
     else:
@@ -229,7 +229,7 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE,
         except Exception:
             pass
 
-   label = "📝 PYQ Quiz" if style == "pyq" else "📚 Quiz"
+    label = "📝 PYQ Quiz" if style == "pyq" else "📚 Quiz"
     bot = context.bot
 
     if chat_id < 0:
@@ -245,6 +245,21 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await quiz_module.send_group_question(bot, session)
         task = asyncio.create_task(
             quiz_module._advance_group_after_timeout(bot, chat_id, 0)
+        )
+        session["advance_job"] = task
+    else:
+        session = quiz_module.start_session(user.id, chat_id, questions, topic, style, timer)
+        await update.message.reply_text(
+            f"{notice}👤 *{label} starting!*\n"
+            f"*Topic:* {topic}\n"
+            f"*Questions:* {actual}\n\n"
+            f"⏱ Each question has a *{timer}s* timer.\n"
+            f"Scoring: ✅ +4 | ❌ −1 | ⏭ 0",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        await quiz_module.send_question(bot, session)
+        task = asyncio.create_task(
+            quiz_module._advance_after_timeout(bot, user.id, 0)
         )
         session["advance_job"] = task
     else:
