@@ -96,7 +96,16 @@ def init_db():
             enabled INTEGER NOT NULL DEFAULT 1
         )
     ''')
-
+    # ── PDF Storage ─────────────────────────────────────────────
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS pdfs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            uploaded_by INTEGER,
+            uploaded_at TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
     logger.info("Database initialised at %s", DB_PATH)
