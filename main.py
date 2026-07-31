@@ -11,10 +11,11 @@ import sys
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                           MessageHandler, PollAnswerHandler, filters)
+                          MessageHandler, PollAnswerHandler, filters, ConversationHandler)
 
 import config
-import database
+from config import ADMIN_ID
+import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
@@ -30,6 +31,73 @@ logger = logging.getLogger(__name__)
 # ── Admin Settings ─────────────────────────────────────────────
 ADMIN_IDS = [8043570403]
 
+
+# --- ADMIN PDF FILE MANAGER LOGIC ---
+WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
+
+async def addfile_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # यहाँ हमने ADMIN_IDS लिस्ट का इस्तेमाल किया है
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔️ केवल Admin ही फाइल्स अपलोड कर सकते हैं।")
+        return ConversationHandler.END
+    
+    await update.message.reply_text("📂 कृपया PDF या Document फाइल भेजें। (रद्द करने के लिए /cancel टाइप करें)")
+    return WAITING_FOR_FILE
+
+async def addfile_receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.document:
+        await update.message.reply_text("⚠️ कृपया एक मान्य फाइल/Document भेजें।")
+        return WAITING_FOR_FILE
+    
+    # Telegram का file_id सुरक्षित कर रहे हैं
+    context.user_data['temp_file_id'] = update.message.document.file_id
+    await update.message.reply_text("✅ फाइल प्राप्त हुई! अब इस फाइल का नाम टाइप करके भेजें (जैसे: Biology Notes)।")
+    return WAITING_FOR_NAME
+
+async def addfile_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file_name = update.message.text.strip()
+    file_id = context.user_data.get('temp_file_id')
+    uploader_id = update.effective_user.id
+    
+    if db.save_pdf(file_name, file_id, uploader_id):
+        await update.message.reply_text(f"🎉 फाइल सफलतापूर्वक '{file_name}' नाम से सेव हो गई!")
+    else:
+        await update.message.reply_text(f"⚠️ '{file_name}' नाम से फाइल पहले ही मौजूद है। कृपया कोई और नाम दें।")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def addfile_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("🚫 फाइल अपलोड रद्द कर दिया गया है।")
+    return ConversationHandler.END
+
+async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ सही तरीका: /file <नाम>\nउदाहरण: /file Biology Notes")
+        return
+    
+    file_name = " ".join(context.args)
+    file_id = db.get_pdf(file_name)
+    
+    if file_id:
+        await update.message.reply_text(f"📤 '{file_name}' भेजी जा रही है...")
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=file_id)
+    else:
+        await update.message.reply_text("❌ यह फाइल नहीं मिली। लिस्ट देखने के लिए /files का उपयोग करें।")
+
+async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    files = db.list_pdfs()
+    if not files:
+        await update.message.reply_text("📭 अभी तक कोई फाइल उपलब्ध नहीं है।")
+        return
+    
+    text = "📚 **Available Files:**\n\n"
+    for f in files:
+        text += f"▪️ `{f}`\n"
+    text += "\nप्राप्त करने के लिए टाइप करें: `/file <नाम>`"
+    
+    await update.message.reply_text(text, parse_mode='Markdown')
 # ── Help text ─────────────────────────────────────────────────────────────────
 HELP_TEXT = """
 🤖 *Telegram Quiz Bot*
@@ -542,6 +610,25 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     # Poll answers (personal + group)
     app.add_handler(PollAnswerHandler(on_poll_answer))
+  # --- ADMIN PDF FILE MANAGER HANDLERS ---
+    
+    # Database Table Initialize करना 
+    db.init_pdf_db()
+    
+    # Conversation Handler for /addfile
+    addfile_conv = ConversationHandler(
+        entry_points=[CommandHandler('addfile', addfile_start)],
+        states={
+            WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, addfile_receive_file)],
+            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addfile_receive_name)]
+        },
+        fallbacks=[CommandHandler('cancel', addfile_cancel)]
+    )
+    
+    # Handlers को app में रजिस्टर करना (यहाँ 'app' का इस्तेमाल किया है)
+    app.add_handler(addfile_conv)
+    app.add_handler(CommandHandler('file', send_file))
+    app.add_handler(CommandHandler('files', list_files))
 
     logger.info("Bot polling for updates …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
