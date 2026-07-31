@@ -14,6 +14,7 @@ from telegram.ext import (Application, CommandHandler, ContextTypes,
                           MessageHandler, PollAnswerHandler, filters, ConversationHandler)
 
 import config
+import database
 import database as db
 import leaderboard
 import quiz as quiz_module
