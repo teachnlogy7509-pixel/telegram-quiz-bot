@@ -578,7 +578,7 @@ async def handle_group_poll_answer(bot: Bot, chat_id: int,
     if user_id in session["answered_users"]:
         return
     session["answered_users"].add(user_id)
-
+    ensure_user(user_id, chat_id, username, name)
     if user_id not in session["user_scores"]:
         session["user_scores"][user_id] = {
             "name": name, "username": username,
