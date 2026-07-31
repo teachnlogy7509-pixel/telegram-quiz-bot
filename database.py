@@ -363,3 +363,53 @@ def get_today_stats(chat_id: int, limit: int = 10):
         return rows
     finally:
         conn.close()
+# --- ADMIN PDF FILE MANAGER DATABASE CODE ---
+import sqlite3
+from datetime import datetime
+
+# बोट स्टार्ट होने पर इसे कॉल करना होगा
+def init_pdf_db():
+    conn = sqlite3.connect('scores.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pdf_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            file_id TEXT,
+            uploader_id INTEGER,
+            upload_date TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_pdf(name, file_id, uploader_id):
+    conn = sqlite3.connect('scores.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO pdf_files (name, file_id, uploader_id, upload_date) VALUES (?, ?, ?, ?)",
+            (name.lower(), file_id, uploader_id, datetime.now())
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False # नाम पहले से मौजूद है
+    finally:
+        conn.close()
+
+def get_pdf(name):
+    conn = sqlite3.connect('scores.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_id FROM pdf_files WHERE name = ?", (name.lower(),))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def list_pdfs():
+    conn = sqlite3.connect('scores.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM pdf_files ORDER BY name")
+    results = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in results]
