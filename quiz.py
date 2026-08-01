@@ -26,14 +26,15 @@ class ModelSlot(NamedTuple):
     model: str
     api_version: str
 
+# Updated to use valid working model names for the new SDK
 CANDIDATE_SLOTS: list[ModelSlot] = [
-    ModelSlot("gemini-2.5-flash", "v1beta"),
     ModelSlot("gemini-2.0-flash", "v1beta"),
-    ModelSlot("gemini-flash-latest", "v1beta"),
+    ModelSlot("gemini-1.5-flash", "v1beta"),
+    ModelSlot("gemini-1.5-flash-latest", "v1beta"),
 ]
 
 _clients: dict[str, genai.Client] = {}
-_working_slot: ModelSlot = ModelSlot("gemini-2.5-flash", "v1beta")
+_working_slot: ModelSlot = ModelSlot("gemini-2.0-flash", "v1beta")
 
 def _get_client(api_version: str = "v1beta") -> genai.Client:
     if api_version not in _clients:
