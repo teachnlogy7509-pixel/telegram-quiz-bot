@@ -1,5 +1,3 @@
-Telegram Quiz Bot — main entry point (3-API Key Rotation Pre-configured).
-python-telegram-bot v21+
 import asyncio
 import json
 import logging
@@ -24,7 +22,7 @@ import quiz as quiz_module
 import scheduler as sched_module
 from quiz import verify_gemini_key
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# Logging
 logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     level=logging.INFO,
@@ -32,12 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Admin Settings ─────────────────────────────────────────────
+# Admin Settings
 ADMIN_IDS = [8043570403]
 
-
-# ── Pre-configured 3-API Key Rotation Setup ──────────────────────────────────
-# आपकी तीनों API Keys यहाँ सुरक्षित रूप से सेट कर दी गई हैं। बोट अपने आप रोटेट करता रहेगा।
+# API Key Rotation Setup
 GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_1"),
     os.getenv("GEMINI_API_KEY_2"),
@@ -46,11 +42,9 @@ GEMINI_API_KEYS = [
 api_key_cycler = itertools.cycle(GEMINI_API_KEYS)
 
 def get_rotated_api_key():
-    """हर बार रिक्वेस्ट पर ऑटोमैटिकली अगली API Key देगा"""
     return next(api_key_cycler)
 
-
-# --- ADMIN PDF FILE MANAGER LOGIC ---
+# ADMIN PDF FILE MANAGER LOGIC
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
 
 async def addfile_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,47 +102,47 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 अभी तक कोई फाइल उपलब्ध नहीं है।")
         return
     
-    text = "📚 **Available Files:**\n\n"
+    text = "📚 Available Files:\n\n"
     for f in files:
         text += f"▪️ `{f}`\n"
     text += "\nप्राप्त करने के लिए टाइप करें: `/file <नाम>`"
     
     await update.message.reply_text(text, parse_mode='Markdown')
 
-# ── Help text ─────────────────────────────────────────────────────────────────
+# Help text
 HELP_TEXT = """
-🤖 *Telegram NEET SuperBot*
+🤖 Telegram NEET SuperBot
 
-*📚 Quiz Commands:*
-/quiz `<topic> <number>` — Start a quiz
-/pyq `<topic> <number>` — PYQ-style quiz
-/timer `<15|30|45|60>` — Set quiz timer
-/schedule `<topic> <number>` — Daily quiz
+📚 Quiz Commands:
+/quiz <topic> <number> — Start a quiz
+/pyq <topic> <number> — PYQ-style quiz
+/timer <15|30|45|60> — Set quiz timer
+/schedule <topic> <number> — Daily quiz
 
-*🎯 NEET Special:*
-/countdown — ⏳ Mega Exam Countdown
-/pomodoro — ⏱️ 25 Min Focus Study Timer
-/motivate — 🔥 Instant Motivation Dose
-/routine — 🗓️ PW Dropper Live Batch Tracker
-/diagram — 🧬 NCERT Biology Diagram Quiz
+🎯 NEET Special:
+/countdown — Mega Exam Countdown
+/pomodoro — 25 Min Focus Study Timer
+/motivate — Instant Motivation Dose
+/routine — PW Dropper Live Batch Tracker
+/diagram — NCERT Biology Diagram Quiz
 
-*📊 Stats & Leaderboard:*
+📊 Stats & Leaderboard:
 /leaderboard — Top 10 players
 /myrank — Your stats & rank
 /toptoday — Today's top scores
 /mystats — Check your Chat XP Level
 
-*🌟 Fun Features:*
-/song `<name>` — Download & play a song
-/confess `<msg>` — Send anonymous confession (DM only)
+🌟 Fun Features:
+/song <name> — Download & play a song
+/confess <msg> — Send anonymous confession (DM only)
 /shayari — Random Romantic Shayari
 /gm — Good Morning Message
 /lovememe — Random Love Meme
 
-🎙 *Voice:* Send a voice message like _"Biology 10 questions"_
+🎙 Voice: Send a voice message like "Biology 10 questions"
 """.strip()
 
-# ── Command handlers ──────────────────────────────────────────────────────────
+# Command handlers
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user    = update.effective_user
@@ -192,7 +186,6 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
 
     try:
-        # रोटेटेड की का इस्तेमाल
         active_key = get_rotated_api_key()
         questions = await quiz_module.generate_questions(topic, count, style, api_key=active_key)
     except Exception as exc:
@@ -215,7 +208,7 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     if chat_id < 0:
         session = quiz_module.start_group_session(chat_id, questions, f"{topic} ({label})", timer)
         await update.message.reply_text(
-            f"👥 *Group {label} starting!*\n*Topic:* {topic}\n*Questions:* {actual}\n⏱ Timer: *{timer}s*",
+            f"👥 Group {label} starting!\nTopic: {topic}\nQuestions: {actual}\n⏱ Timer: {timer}s",
             parse_mode=ParseMode.MARKDOWN,
         )
         await quiz_module.send_group_question(bot, session)
@@ -224,7 +217,7 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     else:
         session = quiz_module.start_session(user.id, chat_id, questions, topic, style, timer)
         await update.message.reply_text(
-            f"👤 *{label} starting!*\n*Topic:* {topic}\n*Questions:* {actual}\n⏱ Timer: *{timer}s*",
+            f"👤 {label} starting!\nTopic: {topic}\nQuestions: {actual}\n⏱ Timer: {timer}s",
             parse_mode=ParseMode.MARKDOWN,
         )
         await quiz_module.send_question(bot, session)
@@ -293,8 +286,7 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = answer.user.full_name or "User"
         await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, "", answer.poll_id, answer.option_ids[0])
 
-# ── Fun Commands ─────────────────────────────────────────────────────────────
-
+# Fun Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shayaris = [
         "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
@@ -319,8 +311,7 @@ async def cmd_lovememe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_photo(photo=random.choice(memes), caption="For you! ❤️")
 
-# ── Confession, Song, XP ─────────────────────────────────
-
+# Confession, Song, XP
 async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
         await update.message.reply_text("🤫 यह कमांड सिर्फ मेरे DM (Private Chat) में काम करता है!")
@@ -376,8 +367,7 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_text = f"📊 *GAMING STATS FOR {user['name']}*\n\n🔹 *Level:* {level} ({title})\n✨ *Total XP:* {xp} XP\n🏆 *Total Quiz Score:* {user['total_score']}\n"
     await update.message.reply_text(stats_text, parse_mode="Markdown")
 
-# ── NEET SPECIAL FEATURES ────────────────────────────────────────────────────
-
+# NEET SPECIAL FEATURES
 async def cmd_countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     neet_date = datetime(2027, 5, 2)
     today = datetime.now()
@@ -410,10 +400,10 @@ async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quotes = [
-        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन जरूर मिलती है!'",
-        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
+        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन ज़रूर मिलती है!'",
+        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
         "🚀 'Push yourself because no one else is going to do it for you.'",
-        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
+        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
         "🏆 'White coat and stethoscope are not just accessories, they are earned with sweat and tears.'"
     ]
     await update.message.reply_text(f"💪 *Daily Motivation:*\n\n{random.choice(quotes)}", parse_mode="Markdown")
@@ -464,8 +454,7 @@ async def cmd_diagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
+# Entry point
 def main():
     if not config.TELEGRAM_BOT_TOKEN:
         sys.exit(1)
@@ -493,7 +482,6 @@ def main():
     app.add_handler(CommandHandler("scheduleoff",  cmd_scheduleoff))
     app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
     
-    # Fun & Mega Commands
     app.add_handler(CommandHandler("shayari", cmd_shayari))
     app.add_handler(CommandHandler("gm", cmd_gm))
     app.add_handler(CommandHandler("lovememe", cmd_lovememe))
@@ -501,7 +489,6 @@ def main():
     app.add_handler(CommandHandler("song", cmd_song))
     app.add_handler(CommandHandler("mystats", cmd_mystats))
     
-    # NEET Commands
     app.add_handler(CommandHandler("countdown", cmd_countdown))
     app.add_handler(CommandHandler("pomodoro", cmd_pomodoro))
     app.add_handler(CommandHandler("motivate", cmd_motivate))
@@ -526,7 +513,7 @@ def main():
     app.add_handler(CommandHandler('file', send_file))
     app.add_handler(CommandHandler('files', list_files))
 
-    logger.info("Bot polling with 3 Pre-configured API Keys active …")
+    logger.info("Bot polling with 3 Environment API Keys active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
