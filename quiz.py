@@ -17,7 +17,7 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from config import (CORRECT_SCORE, POLL_OPEN_PERIOD,
-                     UNANSWERED_SCORE, WRONG_SCORE)
+                    UNANSWERED_SCORE, WRONG_SCORE)
 from database import ensure_user, get_rank, save_quiz_result
 
 logger = logging.getLogger(__name__)
