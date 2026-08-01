@@ -26,11 +26,9 @@ class ModelSlot(NamedTuple):
     model: str
     api_version: str
 
-# Updated to use valid working model names for the new SDK
 CANDIDATE_SLOTS: list[ModelSlot] = [
     ModelSlot("gemini-2.0-flash", "v1beta"),
     ModelSlot("gemini-1.5-flash", "v1beta"),
-    ModelSlot("gemini-1.5-flash-latest", "v1beta"),
 ]
 
 _clients: dict[str, genai.Client] = {}
@@ -69,7 +67,6 @@ def verify_gemini_key() -> bool:
         logger.error("❌ Gemini key validation failed: %s", exc)
         return False
 
-# in-memory session store
 active_sessions: dict[int, dict] = {}
 poll_to_user: dict[str, int] = {}
 group_sessions: dict[int, dict] = {}
