@@ -245,7 +245,6 @@ async def send_question(bot: Bot, session: dict):
             correct_option_id=q["correct_index"],
             is_anonymous=False,
             open_period=session.get("timer", POLL_OPEN_PERIOD),
-        
         )
         poll_id = msg.poll.id
         session["current_poll_id"] = poll_id
