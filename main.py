@@ -144,8 +144,6 @@ HELP_TEXT = """
 /lovememe — Random Love Meme
 """.strip()
 
-# Command handlers
-
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user    = update.effective_user
     chat_id = update.effective_chat.id
@@ -287,7 +285,6 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = answer.user.full_name or "User"
         await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, "", answer.poll_id, answer.option_ids[0])
 
-# Fun Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shayaris = [
         "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
@@ -312,7 +309,6 @@ async def cmd_lovememe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_photo(photo=random.choice(memes), caption="For you! ❤️")
 
-# Confession, Song, XP
 async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
         await update.message.reply_text("🤫 यह कमांड सिर्फ मेरे DM (Private Chat) में काम करता है!")
@@ -348,33 +344,25 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
-# DOUBT SOLVER HANDLER (Text & Image Support with Short & Crisp Response)
+# DOUBT SOLVER HANDLER (Updated to gemini-1.5-flash)
 async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
-    
-    # Check if text or photo exists
     user_prompt = message.caption or message.text or ""
     if not user_prompt and not message.photo:
         return
 
-    # XP tracking for normal text messages
     if update.effective_chat.type in ['group', 'supergroup'] and message.text and not message.photo:
         user = update.effective_user
         db.ensure_user(user.id, update.effective_chat.id, user.username, user.first_name)
         db.add_xp(user.id, update.effective_chat.id, 1)
 
-    # Agar sirf normal text hai aur koi photo nahi hai, toh use normal message ki tarah handle karke ignore kar sakte hain agar question mark na ho, 
-    # par agar user doubt puch raha hai toh Gemini solve karega. Let's make it handle images or any text query as a doubt if photo is present or if it's in private chat.
-    # To keep regular chat smooth in groups, let's trigger AI if there's a photo OR if it's a private chat OR if it starts with specific intent. 
-    # Better yet, let's handle photo doubts directly, and for text let's check if it's private or replied. Let's make photo + text trigger Gemini seamlessly:
     if not message.photo and update.effective_chat.type in ['group', 'supergroup']:
-        return # Group me normal chat disturb na ho, sirf photo ya command par chale (ya aap chahein toh text bhi rakh sakti hain)
+        return 
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
         contents = []
-        
         if message.photo:
             photo_file = await message.photo[-1].get_file()
             photo_bytes = await photo_file.download_as_bytearray()
@@ -394,10 +382,10 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_prompt:
             contents.append(user_prompt)
 
-        # Primary Client Call
+        # Primary Client Call (Using gemini-1.5-flash)
         client = get_gemini_client()
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -413,11 +401,10 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error handling doubt with primary key: {e}")
-        # Fallback to second key
         try:
             fallback_client = get_fallback_client()
             response = fallback_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-1.5-flash',
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -443,7 +430,6 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_text = f"📊 *GAMING STATS FOR {user['name']}*\n\n🔹 *Level:* {level} ({title})\n✨ *Total XP:* {xp} XP\n🏆 *Total Quiz Score:* {user['total_score']}\n"
     await update.message.reply_text(stats_text, parse_mode="Markdown")
 
-# NEET SPECIAL FEATURES
 async def cmd_countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     neet_date = datetime(2027, 5, 2)
     today = datetime.now()
@@ -530,7 +516,6 @@ async def cmd_diagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
 
-# Entry point
 def main():
     if not config.TELEGRAM_BOT_TOKEN:
         sys.exit(1)
@@ -572,10 +557,7 @@ def main():
     app.add_handler(CommandHandler("diagram", cmd_diagram))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    
-    # Photo and Text Doubt Solver Handler (Handles private chat text & any image sent to the bot)
     app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & (~filters.COMMAND), handle_doubt))
-    
     app.add_handler(PollAnswerHandler(on_poll_answer))
     
     db.init_pdf_db()
@@ -583,7 +565,7 @@ def main():
         entry_points=[CommandHandler('addfile', addfile_start)],
         states={
             WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, addfile_receive_file)],
-            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addfile_receive_name)]
+            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & (~filters.COMMAND, addfile_receive_name))]
         },
         fallbacks=[CommandHandler('cancel', addfile_cancel)]
     )
@@ -593,6 +575,7 @@ def main():
     app.add_handler(CommandHandler('files', list_files))
 
     logger.info("Bot polling with Multi-Key & Doubt Solver active …")
+    # drop_pending_updates=True से 409 Conflict (multiple instance error) खत्म हो जाएगा
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
