@@ -10,6 +10,7 @@ import sys
 import random
 import os
 import yt_dlp
+from datetime import datetime, timedelta
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -103,31 +104,36 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Help text ─────────────────────────────────────────────────────────────────
 HELP_TEXT = """
-🤖 *Telegram Quiz Bot*
+🤖 *Telegram NEET SuperBot*
 
-*Commands:*
+*📚 Quiz Commands:*
 /quiz `<topic> <number>` — Start a quiz
 /pyq `<topic> <number>` — PYQ-style quiz
+/timer `<15|30|45|60>` — Set quiz timer
+/schedule `<topic> <number>` — Daily quiz
+
+*🎯 NEET Special:*
+/countdown — ⏳ Mega Exam Countdown
+/pomodoro — ⏱️ 25 Min Focus Study Timer
+/motivate — 🔥 Instant Motivation Dose
+/routine — 🗓️ PW Dropper Live Batch Tracker
+/diagram — 🧬 NCERT Biology Diagram Quiz
+
+*📊 Stats & Leaderboard:*
 /leaderboard — Top 10 players
 /myrank — Your stats & rank
 /toptoday — Today's top scores
-/resetscore — Reset your score
-/timer `<15|30|45|60>` — Set quiz timer
-/schedule `<topic> <number>` — Daily quiz
-/scheduleoff — Stop the daily quiz
-/schedulelist — View current schedule
+/mystats — Check your Chat XP Level
 
-🌟 *Fun & Group Features:*
+*🌟 Fun Features:*
+/song `<name>` — Download & play a song
+/confess `<msg>` — Send anonymous confession (DM only)
 /shayari — Random Romantic Shayari
 /gm — Good Morning Message
 /lovememe — Random Love Meme
-/song `<name>` — Download & play a song
-/confess `<msg>` — Send anonymous confession (DM only)
-/mystats — Check your Chat XP Level
 
 🎙 *Voice:* Send a voice message like _"Biology 10 questions"_
 """.strip()
-
 
 # ── Command handlers ──────────────────────────────────────────────────────────
 
@@ -142,7 +148,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
-
 
 async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style: str):
     user    = update.effective_user
@@ -246,7 +251,6 @@ async def cmd_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Timer set to *{args[0]}s*", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Keeping voice handler simple placeholder as per original, assuming it works with quiz module
     await update.message.reply_text("🎙 Voice processing is currently active only via API setup.")
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,7 +290,7 @@ async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_gm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gms = [
-        "Good Morning Khushboo! ☀️ उठो और आज एक नया वायरल YouTube Short बनाओ! 🎥✨",
+        "Good Morning! ☀️ उठो और आज के दिन को शानदार बनाओ!",
         "Good Morning! ☀️ दिन की शुरुआत एक प्यारी सी स्माइल के साथ करो!",
         "सुबह की किरण आपको हर खुशी दे! Good Morning! 🌼",
         "उठो, मुस्कुराओ और आज के दिन को शानदार बनाओ! Good Morning! ☕️"
@@ -300,30 +304,23 @@ async def cmd_lovememe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_photo(photo=random.choice(memes), caption="For you! ❤️")
 
-# ── New Mega Features (Confession, Song, XP) ─────────────────────────────────
+# ── Confession, Song, XP ─────────────────────────────────
 
 async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
         await update.message.reply_text("🤫 यह कमांड सिर्फ मेरे DM (Private Chat) में काम करता है!")
         return
-        
     confession_text = " ".join(context.args)
     if not confession_text:
         await update.message.reply_text("❌ इस्तेमाल का तरीका: /confess <आपका सीक्रेट मैसेज>")
         return
-        
     group_id = db.get_latest_group_for_user(update.effective_user.id)
     if not group_id:
         await update.message.reply_text("❌ मुझे नहीं पता कि आप किस ग्रुप में हैं। कृपया पहले मेन ग्रुप में एक मैसेज भेजें!")
         return
-        
     try:
-        await context.bot.send_message(
-            chat_id=group_id, 
-            text=f"🤫 *New Anonymous Confession:*\n\n{confession_text}",
-            parse_mode="Markdown"
-        )
-        await update.message.reply_text("✅ आपका सीक्रेट मैसेज ग्रुप में गुमनाम रूप से भेज दिया गया है!")
+        await context.bot.send_message(chat_id=group_id, text=f"🤫 *New Anonymous Confession:*\n\n{confession_text}", parse_mode="Markdown")
+        await update.message.reply_text("✅ आपका सीक्रेट मैसेज ग्रुप में भेज दिया गया है!")
     except Exception as e:
         await update.message.reply_text("❌ मैसेज भेजने में कोई दिक्कत आई।")
 
@@ -332,30 +329,16 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not song_name:
         await update.message.reply_text("❌ इस्तेमाल का तरीका: /song <गाने का नाम>")
         return
-        
     msg = await update.message.reply_text("🎵 आपका गाना ढूँढ कर डाउनलोड किया जा रहा है... थोड़ा इंतज़ार करें!")
-    
-    ydl_opts = {
-        'format': 'm4a/bestaudio/best',
-        'outtmpl': 'downloaded_song.%(ext)s',
-        'noplaylist': True,
-        'quiet': True
-    }
-    
+    ydl_opts = {'format': 'm4a/bestaudio/best', 'outtmpl': 'downloaded_song.%(ext)s', 'noplaylist': True, 'quiet': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"ytsearch:{song_name}", download=True)
             audio_file = ydl.prepare_filename(info['entries'][0])
-            
-            await context.bot.send_audio(
-                chat_id=update.effective_chat.id,
-                audio=open(audio_file, 'rb'),
-                caption=f"🎧 Here is your song: {song_name}",
-                title=info['entries'][0].get('title', song_name)
-            )
+            await context.bot.send_audio(chat_id=update.effective_chat.id, audio=open(audio_file, 'rb'), caption=f"🎧 Here is your song: {song_name}", title=info['entries'][0].get('title', song_name))
             os.remove(audio_file)
             await msg.delete()
-    except Exception as e:
+    except Exception:
         await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
 async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,31 +351,109 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == 'private':
         await update.message.reply_text("❌ कृपया इसे ग्रुप में यूज़ करें!")
         return
-        
     user = db.get_user(update.effective_user.id, update.effective_chat.id)
     if not user:
         await update.message.reply_text("❌ आपका कोई रिकॉर्ड नहीं मिला!")
         return
-        
     xp = user.get('xp', 0)
     level = xp // 100
-    
-    if level < 2:
-        title = "👶 Beginner"
-    elif level < 5:
-        title = "⚔️ Pro"
-    elif level < 10:
-        title = "🔥 Master"
-    else:
-        title = "👑 Legend"
-        
-    stats_text = (
-        f"📊 *GAMING STATS FOR {user['name']}*\n\n"
-        f"🔹 *Level:* {level} ({title})\n"
-        f"✨ *Total XP:* {xp} XP\n"
-        f"🏆 *Total Quiz Score:* {user['total_score']}\n"
-    )
+    title = "👶 Beginner" if level < 2 else "⚔️ Pro" if level < 5 else "🔥 Master" if level < 10 else "👑 Legend"
+    stats_text = f"📊 *GAMING STATS FOR {user['name']}*\n\n🔹 *Level:* {level} ({title})\n✨ *Total XP:* {xp} XP\n🏆 *Total Quiz Score:* {user['total_score']}\n"
     await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+# ── NEW NEET SPECIAL FEATURES ────────────────────────────────────────────────
+
+async def cmd_countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # NEET Exam Tentative Target Date (May 2, 2027)
+    neet_date = datetime(2027, 5, 2)
+    today = datetime.now()
+    delta = neet_date - today
+    
+    countdown_msg = (
+        f"⏳ *MEGA NEET EXAM COUNTDOWN* ⏳\n\n"
+        f"🔥 Target: *NEET UG 2027*\n"
+        f"🗓️ Time Remaining: *{delta.days} Days*\n\n"
+        f"💪 *लहरों से डरकर नौका पार नहीं होती,\nकोशिश करने वालों की कभी हार नहीं होती!* \n"
+        f"Get back to studying! 🚀"
+    )
+    await update.message.reply_text(countdown_msg, parse_mode="Markdown")
+
+async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.first_name
+    await update.message.reply_text(
+        f"🍅 *Pomodoro Started by {user}!* \n\n"
+        f"🤫 Focus Mode: ON! No chatting for the next *25 minutes*.\n"
+        f"Keep your distractions away and study hard! 📚",
+        parse_mode="Markdown"
+    )
+    
+    # Wait for 25 minutes (25 * 60 seconds)
+    await asyncio.sleep(25 * 60)
+    
+    await update.message.reply_text(
+        f"⏰ *Time's Up {user}!* \n\n"
+        f"Your 25-minute intense focus session is complete. 🎉\n"
+        f"Take a 5-minute break, drink some water, and relax! ☕",
+        parse_mode="Markdown"
+    )
+
+async def cmd_motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    quotes = [
+        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन जरूर मिलती है!'",
+        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
+        "🚀 'Push yourself because no one else is going to do it for you.'",
+        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
+        "🏆 'White coat and stethoscope are not just accessories, they are earned with sweat and tears.'"
+    ]
+    await update.message.reply_text(f"💪 *Daily Motivation:*\n\n{random.choice(quotes)}", parse_mode="Markdown")
+
+async def cmd_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    routine_text = (
+        "🗓️ *PW Yakeen (Dropper) Live Batch Tracker*\n\n"
+        "🔹 *09:00 AM* - Chemistry 🧪\n"
+        "🔹 *11:30 AM* - Botany 🌱\n"
+        "🔹 *02:00 PM* - Zoology 🧬\n"
+        "🔹 *04:30 PM* - Physics ⚛️\n\n"
+        "*(Note: Follow your current batch timings, keep grinding!)* 🚀"
+    )
+    await update.message.reply_text(routine_text, parse_mode="Markdown")
+
+async def cmd_diagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Dummy placeholder for Diagram Quiz logic
+    diagrams = [
+        {
+            "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Diagram_of_the_human_heart_%28cropped%29.svg/800px-Diagram_of_the_human_heart_%28cropped%29.svg.png",
+            "question": "🧬 Identify the chamber that pumps oxygenated blood to the body:",
+            "options": ["Right Atrium", "Left Ventricle", "Right Ventricle", "Left Atrium"],
+            "correct_option_id": 1 # Left Ventricle (0-based index)
+        },
+        {
+            "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/Plant_cell_structure_svg_labels.svg/800px-Plant_cell_structure_svg_labels.svg.png",
+            "question": "🌿 Which organelle is responsible for photosynthesis?",
+            "options": ["Mitochondria", "Nucleus", "Chloroplast", "Golgi Body"],
+            "correct_option_id": 2 # Chloroplast
+        }
+    ]
+    
+    quiz = random.choice(diagrams)
+    
+    # Send image first
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id, 
+        photo=quiz["img_url"], 
+        caption="🔍 *NCERT Diagram Check!* Look at this image carefully.",
+        parse_mode="Markdown"
+    )
+    
+    # Send poll
+    await context.bot.send_poll(
+        chat_id=update.effective_chat.id,
+        question=quiz["question"],
+        options=quiz["options"],
+        type='quiz',
+        correct_option_id=quiz["correct_option_id"],
+        is_anonymous=False
+    )
 
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
@@ -435,11 +496,16 @@ def main():
     app.add_handler(CommandHandler("confess", cmd_confess))
     app.add_handler(CommandHandler("song", cmd_song))
     app.add_handler(CommandHandler("mystats", cmd_mystats))
+    
+    # NEW NEET Commands
+    app.add_handler(CommandHandler("countdown", cmd_countdown))
+    app.add_handler(CommandHandler("pomodoro", cmd_pomodoro))
+    app.add_handler(CommandHandler("motivate", cmd_motivate))
+    app.add_handler(CommandHandler("routine", cmd_routine))
+    app.add_handler(CommandHandler("diagram", cmd_diagram))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    # Catch all normal text messages to award XP
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
-    
     app.add_handler(PollAnswerHandler(on_poll_answer))
     
     db.init_pdf_db()
