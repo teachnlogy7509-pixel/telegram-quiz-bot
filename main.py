@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                          MessageHandler, PollAnswerHandler, filters, ConversationHandler)
+                         MessageHandler, PollAnswerHandler, filters, ConversationHandler)
 
 import config
 import database
@@ -276,7 +276,7 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Fun Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shayaris = [
-        "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
+        "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
         "खुदा करे ज़िंदगी में ये मकाम आए...\nतुझे भूलने की दुआ करूँ और दुआ में तेरा नाम आए! 🌹",
         "ना चाँद की चाहत, ना तारों की फरमाइश...\nहर जनम तू ही मिले, बस यही है ख्वाहिश! ✨"
     ]
@@ -322,7 +322,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not song_name:
         await update.message.reply_text("❌ इस्तेमाल का तरीका: /song <गाने का नाम>")
         return
-    msg = await update.message.reply_text("🎵 आपका गाना ढूँढ कर डाउनलोड किया जा रहा है... थोड़ा इंतज़ार करें!")
+    msg = await update.message.reply_text("🎵 आपका गाना ढूँढ कर डाउनलोड किया जा रहा है... थोड़ा इंतज़ार करें!")
     ydl_opts = {'format': 'm4a/bestaudio/best', 'outtmpl': 'downloaded_song.%(ext)s', 'noplaylist': True, 'quiet': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -332,7 +332,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(audio_file)
             await msg.delete()
     except Exception:
-        await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
+        await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
 async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type in ['group', 'supergroup'] and update.message and update.message.text:
@@ -342,7 +342,7 @@ async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == 'private':
-        await update.message.reply_text("❌ कृपया इसे ग्रुप में यूज़ करें!")
+        await update.message.reply_text("❌ कृपया इसे ग्रुप में यूज़ करें!")
         return
     user = db.get_user(update.effective_user.id, update.effective_chat.id)
     if not user:
@@ -387,10 +387,10 @@ async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quotes = [
-        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन ज़रूर मिलती है!'",
-        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
+        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन ज़रूर मिलती है!'",
+        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
         "🚀 'Push yourself because no one else is going to do it for you.'",
-        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
+        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
         "🏆 'White coat and stethoscope are not just accessories, they are earned with sweat and tears.'"
     ]
     await update.message.reply_text(f"💪 *Daily Motivation:*\n\n{random.choice(quotes)}", parse_mode="Markdown")
@@ -456,17 +456,17 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start",        cmd_start))
-    app.add_handler(CommandHandler("help",         cmd_help))
-    app.add_handler(CommandHandler("quiz",         cmd_quiz))
-    app.add_handler(CommandHandler("pyq",          cmd_pyq))
-    app.add_handler(CommandHandler("leaderboard",  cmd_leaderboard))
-    app.add_handler(CommandHandler("myrank",       cmd_myrank))
-    app.add_handler(CommandHandler("toptoday",     cmd_toptoday))
-    app.add_handler(CommandHandler("resetscore",   cmd_resetscore))
-    app.add_handler(CommandHandler("timer",        cmd_timer))
-    app.add_handler(CommandHandler("schedule",     cmd_schedule))
-    app.add_handler(CommandHandler("scheduleoff",  cmd_scheduleoff))
+    app.add_handler(CommandHandler("start",         cmd_start))
+    app.add_handler(CommandHandler("help",          cmd_help))
+    app.add_handler(CommandHandler("quiz",          cmd_quiz))
+    app.add_handler(CommandHandler("pyq",           cmd_pyq))
+    app.add_handler(CommandHandler("leaderboard",   cmd_leaderboard))
+    app.add_handler(CommandHandler("myrank",        cmd_myrank))
+    app.add_handler(CommandHandler("toptoday",      cmd_toptoday))
+    app.add_handler(CommandHandler("resetscore",    cmd_resetscore))
+    app.add_handler(CommandHandler("timer",         cmd_timer))
+    app.add_handler(CommandHandler("schedule",      cmd_schedule))
+    app.add_handler(CommandHandler("scheduleoff",   cmd_scheduleoff))
     app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
     
     app.add_handler(CommandHandler("shayari", cmd_shayari))
