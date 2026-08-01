@@ -1,4 +1,3 @@
-\"""
 Telegram Quiz Bot — main entry point (3-API Key Rotation Pre-configured).
 python-telegram-bot v21+
 """
