@@ -1,5 +1,5 @@
-"""
-Telegram Quiz Bot — main entry point.
+\"""
+Telegram Quiz Bot — main entry point (3-API Key Rotation Pre-configured).
 python-telegram-bot v21+
 """
 import asyncio
@@ -9,6 +9,7 @@ import re
 import sys
 import random
 import os
+import itertools
 import yt_dlp
 from datetime import datetime, timedelta
 
@@ -35,6 +36,20 @@ logger = logging.getLogger(__name__)
 
 # ── Admin Settings ─────────────────────────────────────────────
 ADMIN_IDS = [8043570403]
+
+
+# ── Pre-configured 3-API Key Rotation Setup ──────────────────────────────────
+# आपकी तीनों API Keys यहाँ सुरक्षित रूप से सेट कर दी गई हैं। बोट अपने आप रोटेट करता रहेगा।
+GEMINI_API_KEYS = [
+    os.getenv("GEMINI_API_KEY_1"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3")
+]
+api_key_cycler = itertools.cycle(GEMINI_API_KEYS)
+
+def get_rotated_api_key():
+    """हर बार रिक्वेस्ट पर ऑटोमैटिकली अगली API Key देगा"""
+    return next(api_key_cycler)
 
 
 # --- ADMIN PDF FILE MANAGER LOGIC ---
@@ -179,7 +194,9 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
 
     try:
-        questions = await quiz_module.generate_questions(topic, count, style)
+        # रोटेटेड की का इस्तेमाल
+        active_key = get_rotated_api_key()
+        questions = await quiz_module.generate_questions(topic, count, style, api_key=active_key)
     except Exception as exc:
         await wait_msg.edit_text("❌ Failed to generate questions.")
         return
@@ -282,7 +299,7 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shayaris = [
-        "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
+        "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
         "खुदा करे ज़िंदगी में ये मकाम आए...\nतुझे भूलने की दुआ करूँ और दुआ में तेरा नाम आए! 🌹",
         "ना चाँद की चाहत, ना तारों की फरमाइश...\nहर जनम तू ही मिले, बस यही है ख्वाहिश! ✨"
     ]
@@ -361,10 +378,9 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_text = f"📊 *GAMING STATS FOR {user['name']}*\n\n🔹 *Level:* {level} ({title})\n✨ *Total XP:* {xp} XP\n🏆 *Total Quiz Score:* {user['total_score']}\n"
     await update.message.reply_text(stats_text, parse_mode="Markdown")
 
-# ── NEW NEET SPECIAL FEATURES ────────────────────────────────────────────────
+# ── NEET SPECIAL FEATURES ────────────────────────────────────────────────────
 
 async def cmd_countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # NEET Exam Tentative Target Date (May 2, 2027)
     neet_date = datetime(2027, 5, 2)
     today = datetime.now()
     delta = neet_date - today
@@ -386,10 +402,7 @@ async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Keep your distractions away and study hard! 📚",
         parse_mode="Markdown"
     )
-    
-    # Wait for 25 minutes (25 * 60 seconds)
     await asyncio.sleep(25 * 60)
-    
     await update.message.reply_text(
         f"⏰ *Time's Up {user}!* \n\n"
         f"Your 25-minute intense focus session is complete. 🎉\n"
@@ -419,33 +432,28 @@ async def cmd_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(routine_text, parse_mode="Markdown")
 
 async def cmd_diagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Dummy placeholder for Diagram Quiz logic
     diagrams = [
         {
             "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Diagram_of_the_human_heart_%28cropped%29.svg/800px-Diagram_of_the_human_heart_%28cropped%29.svg.png",
             "question": "🧬 Identify the chamber that pumps oxygenated blood to the body:",
             "options": ["Right Atrium", "Left Ventricle", "Right Ventricle", "Left Atrium"],
-            "correct_option_id": 1 # Left Ventricle (0-based index)
+            "correct_option_id": 1
         },
         {
             "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/Plant_cell_structure_svg_labels.svg/800px-Plant_cell_structure_svg_labels.svg.png",
             "question": "🌿 Which organelle is responsible for photosynthesis?",
             "options": ["Mitochondria", "Nucleus", "Chloroplast", "Golgi Body"],
-            "correct_option_id": 2 # Chloroplast
+            "correct_option_id": 2
         }
     ]
     
     quiz = random.choice(diagrams)
-    
-    # Send image first
     await context.bot.send_photo(
         chat_id=update.effective_chat.id, 
         photo=quiz["img_url"], 
         caption="🔍 *NCERT Diagram Check!* Look at this image carefully.",
         parse_mode="Markdown"
     )
-    
-    # Send poll
     await context.bot.send_poll(
         chat_id=update.effective_chat.id,
         question=quiz["question"],
@@ -462,8 +470,6 @@ async def _post_init(application: Application):
 
 def main():
     if not config.TELEGRAM_BOT_TOKEN:
-        sys.exit(1)
-    if not config.GEMINI_API_KEY:
         sys.exit(1)
 
     database.init_db()
@@ -497,7 +503,7 @@ def main():
     app.add_handler(CommandHandler("song", cmd_song))
     app.add_handler(CommandHandler("mystats", cmd_mystats))
     
-    # NEW NEET Commands
+    # NEET Commands
     app.add_handler(CommandHandler("countdown", cmd_countdown))
     app.add_handler(CommandHandler("pomodoro", cmd_pomodoro))
     app.add_handler(CommandHandler("motivate", cmd_motivate))
@@ -522,7 +528,7 @@ def main():
     app.add_handler(CommandHandler('file', send_file))
     app.add_handler(CommandHandler('files', list_files))
 
-    logger.info("Bot polling for updates …")
+    logger.info("Bot polling with 3 Pre-configured API Keys active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
