@@ -5,7 +5,6 @@ import re
 import sys
 import random
 import os
-import itertools
 import yt_dlp
 from datetime import datetime, timedelta
 
@@ -33,16 +32,8 @@ logger = logging.getLogger(__name__)
 # Admin Settings
 ADMIN_IDS = [8043570403]
 
-# API Key Rotation Setup
-GEMINI_API_KEYS = [
-    os.getenv("GEMINI_API_KEY_1"),
-    os.getenv("GEMINI_API_KEY_2"),
-    os.getenv("GEMINI_API_KEY_3")
-]
-api_key_cycler = itertools.cycle(GEMINI_API_KEYS)
-
-def get_rotated_api_key():
-    return next(api_key_cycler)
+# Single API Key Setup (Environment Variable से सुरक्षित तरीका)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # ADMIN PDF FILE MANAGER LOGIC
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
@@ -186,8 +177,7 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
 
     try:
-        active_key = get_rotated_api_key()
-        questions = await quiz_module.generate_questions(topic, count, style, api_key=active_key)
+        questions = await quiz_module.generate_questions(topic, count, style, api_key=GEMINI_API_KEY)
     except Exception as exc:
         await wait_msg.edit_text("❌ Failed to generate questions.")
         return
@@ -513,7 +503,7 @@ def main():
     app.add_handler(CommandHandler('file', send_file))
     app.add_handler(CommandHandler('files', list_files))
 
-    logger.info("Bot polling with 3 Environment API Keys active …")
+    logger.info("Bot polling with Environment API Key active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
