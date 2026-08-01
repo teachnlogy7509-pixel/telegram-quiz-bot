@@ -1,6 +1,6 @@
 """
 Database operations using SQLite for NEET SuperBot.
-Supports multi-group isolation, scores, ranks, streaks, and PDFs.
+Supports multi-group isolation, scores, ranks, streaks, schedules, and PDFs.
 """
 import sqlite3
 import logging
@@ -18,7 +18,7 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Users table with group isolation (chat_id + user_id composite or individual tracking)
+    # Users table with group isolation
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER,
@@ -39,11 +39,20 @@ def init_db():
         )
     """)
 
-    # Group settings (like timers)
+    # Group settings (timers)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS group_settings (
             chat_id INTEGER PRIMARY KEY,
             timer INTEGER DEFAULT 30
+        )
+    """)
+
+    # Schedules table for daily quizzes
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schedules (
+            chat_id INTEGER PRIMARY KEY,
+            topic TEXT,
+            count INTEGER
         )
     """)
 
@@ -58,7 +67,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully with multi-group support.")
+    logger.info("Database initialized successfully.")
 
 def ensure_user(user_id: int, chat_id: int, username: str, name: str):
     conn = get_connection()
@@ -144,15 +153,7 @@ def get_rank(user_id: int, chat_id: int) -> int:
     conn.close()
     return res["rank"] if res else 1
 
-def get_user_rank_info(user_id: int, chat_id: int):
-    user = get_user(user_id, chat_id)
-    if not user:
-        return None
-    user["rank"] = get_rank(user_id, chat_id)
-    return user
-
 def get_today_top(chat_id: int, limit: int = 10):
-    # चूंकि हम हर रिजल्ट सेव कर रहे हैं, आज के टॉप स्कोर के लिए कुल स्कोर या हालिया स्कोर दिखा सकते हैं
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -193,9 +194,35 @@ def get_group_timer(chat_id: int) -> int:
     conn.close()
     return row["timer"] if row and row["timer"] else 30
 
+# Scheduler Functions (Missing functions added here)
+def get_all_schedules():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id, topic, count FROM schedules")
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def save_schedule(chat_id: int, topic: str, count: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO schedules (chat_id, topic, count) VALUES (?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET topic = excluded.topic, count = excluded.count
+    """, (chat_id, topic, count))
+    conn.commit()
+    conn.close()
+
+def remove_schedule_db(chat_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM schedules WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
 # PDF Management Functions
 def init_pdf_db():
-    pass # init_db() पहले ही टेबल बना देता है
+    pass
 
 def save_pdf(file_name: str, file_id: str, uploader_id: int) -> bool:
     try:
@@ -218,7 +245,7 @@ def get_pdf(file_name: str):
 
 def list_pdfs():
     conn = get_connection()
-    cursor.cursor = conn.cursor()
+    cursor = conn.cursor()
     cursor.execute("SELECT file_name FROM pdf_files")
     rows = cursor.fetchall()
     conn.close()
