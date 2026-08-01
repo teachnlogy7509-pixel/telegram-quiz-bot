@@ -4,6 +4,8 @@ Leaderboard formatting and retrieval logic.
 import logging
 from database import get_leaderboard, get_user, get_rank, get_today_top
 
+logger = logging.getLogger(__name__)
+
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 def _accuracy(correct: int, total_answered: int) -> str:
