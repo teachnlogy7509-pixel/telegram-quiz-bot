@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                          MessageHandler, PollAnswerHandler, filters, ConversationHandler)
+                         MessageHandler, PollAnswerHandler, filters, ConversationHandler)
 
 import config
 import database
@@ -20,6 +20,10 @@ import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
 from quiz import verify_gemini_key
+
+# Google Genai Import for Doubt Solving
+from google import genai
+from google.genai import types
 
 # Logging
 logging.basicConfig(
@@ -31,6 +35,17 @@ logger = logging.getLogger(__name__)
 
 # Admin Settings
 ADMIN_IDS = [8043570403]
+
+# GEMINI CLIENT ROTATION / FALLBACK SETUP (Using Railway Environment Variables)
+def get_gemini_client():
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable missing!")
+    return genai.Client(api_key=api_key)
+
+def get_fallback_client():
+    api_key = os.getenv("GEMINI_API_KEY_2") or os.getenv("GEMINI_API_KEY")
+    return genai.Client(api_key=api_key)
 
 # ADMIN PDF FILE MANAGER LOGIC
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
@@ -107,7 +122,8 @@ HELP_TEXT = """
 /timer <15|30|45|60> — Set quiz timer
 /schedule <topic> <number> — Daily quiz
 
-🎯 NEET Special:
+🎯 NEET Special & Doubts:
+💡 **Ask Doubts:** Send a text message or a photo of any question/diagram directly!
 /countdown — Mega Exam Countdown
 /pomodoro — 25 Min Focus Study Timer
 /motivate — Instant Motivation Dose
@@ -126,8 +142,6 @@ HELP_TEXT = """
 /shayari — Random Romantic Shayari
 /gm — Good Morning Message
 /lovememe — Random Love Meme
-
-🎙 Voice: Send a voice message like "Biology 10 questions"
 """.strip()
 
 # Command handlers
@@ -276,7 +290,7 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Fun Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
     shayaris = [
-        "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
+        "चाँदनी चाँद से होती है, सितारों से नहीं...\nमोहब्बत एक से होती है, हज़ारों से नहीं! ❤️",
         "खुदा करे ज़िंदगी में ये मकाम आए...\nतुझे भूलने की दुआ करूँ और दुआ में तेरा नाम आए! 🌹",
         "ना चाँद की चाहत, ना तारों की फरमाइश...\nहर जनम तू ही मिले, बस यही है ख्वाहिश! ✨"
     ]
@@ -322,7 +336,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not song_name:
         await update.message.reply_text("❌ इस्तेमाल का तरीका: /song <गाने का नाम>")
         return
-    msg = await update.message.reply_text("🎵 आपका गाना ढूँढ कर डाउनलोड किया जा रहा है... थोड़ा इंतज़ार करें!")
+    msg = await update.message.reply_text("🎵 आपका गाना ढूँढ कर डाउनलोड किया जा रहा है... थोड़ा इंतज़ार करें!")
     ydl_opts = {'format': 'm4a/bestaudio/best', 'outtmpl': 'downloaded_song.%(ext)s', 'noplaylist': True, 'quiet': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -332,17 +346,92 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(audio_file)
             await msg.delete()
     except Exception:
-        await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
+        await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
-async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type in ['group', 'supergroup'] and update.message and update.message.text:
+# DOUBT SOLVER HANDLER (Text & Image Support with Short & Crisp Response)
+async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    
+    # Check if text or photo exists
+    user_prompt = message.caption or message.text or ""
+    if not user_prompt and not message.photo:
+        return
+
+    # XP tracking for normal text messages
+    if update.effective_chat.type in ['group', 'supergroup'] and message.text and not message.photo:
         user = update.effective_user
         db.ensure_user(user.id, update.effective_chat.id, user.username, user.first_name)
         db.add_xp(user.id, update.effective_chat.id, 1)
 
+    # Agar sirf normal text hai aur koi photo nahi hai, toh use normal message ki tarah handle karke ignore kar sakte hain agar question mark na ho, 
+    # par agar user doubt puch raha hai toh Gemini solve karega. Let's make it handle images or any text query as a doubt if photo is present or if it's in private chat.
+    # To keep regular chat smooth in groups, let's trigger AI if there's a photo OR if it's a private chat OR if it starts with specific intent. 
+    # Better yet, let's handle photo doubts directly, and for text let's check if it's private or replied. Let's make photo + text trigger Gemini seamlessly:
+    if not message.photo and update.effective_chat.type in ['group', 'supergroup']:
+        return # Group me normal chat disturb na ho, sirf photo ya command par chale (ya aap chahein toh text bhi rakh sakti hain)
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    try:
+        contents = []
+        
+        if message.photo:
+            photo_file = await message.photo[-1].get_file()
+            photo_bytes = await photo_file.download_as_bytearray()
+            contents.append(
+                types.Part.from_bytes(
+                    data=bytes(photo_bytes),
+                    mime_type='image/jpeg',
+                )
+            )
+        
+        system_instruction = (
+            "You are an expert NEET tutor. The user is asking a doubt via text or image. "
+            "Provide a short, direct, and crisp explanation. Avoid long paragraphs. "
+            "Keep it bullet points or 2-3 lines max so it's easy to read quickly."
+        )
+        
+        if user_prompt:
+            contents.append(user_prompt)
+
+        # Primary Client Call
+        client = get_gemini_client()
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.3,
+            )
+        )
+        
+        reply_text = response.text if response.text else "क्षमा करें, इसका उत्तर नहीं मिल पाया।"
+        if len(reply_text) > 4000:
+            reply_text = reply_text[:4000]
+            
+        await message.reply_text(reply_text)
+
+    except Exception as e:
+        logger.error(f"Error handling doubt with primary key: {e}")
+        # Fallback to second key
+        try:
+            fallback_client = get_fallback_client()
+            response = fallback_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.3,
+                )
+            )
+            await message.reply_text(response.text)
+        except Exception as inner_e:
+            logger.error(f"Fallback error: {inner_e}")
+            await message.reply_text("⚠️ डाउट सॉल्व करने में थोड़ी दिक्कत आ रही है, कृपया दोबारा कोशिश करें।")
+
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == 'private':
-        await update.message.reply_text("❌ कृपया इसे ग्रुप में यूज़ करें!")
+        await update.message.reply_text("❌ कृपया इसे ग्रुप में यूज़ करें!")
         return
     user = db.get_user(update.effective_user.id, update.effective_chat.id)
     if not user:
@@ -387,10 +476,10 @@ async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quotes = [
-        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन ज़रूर मिलती है!'",
-        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
+        "🔥 'सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो एक दिन ज़रूर मिलती है!'",
+        "🩺 'वह Stethoscope तुम्हारी मेहनत का इंतज़ार कर रहा है। हिम्मत मत हारो!'",
         "🚀 'Push yourself because no one else is going to do it for you.'",
-        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
+        "💡 'जब पढ़ते-पढ़ते नींद आने लगे, तो याद करना कि तुमने यह सफर शुरू क्यों किया था!'",
         "🏆 'White coat and stethoscope are not just accessories, they are earned with sweat and tears.'"
     ]
     await update.message.reply_text(f"💪 *Daily Motivation:*\n\n{random.choice(quotes)}", parse_mode="Markdown")
@@ -483,7 +572,10 @@ def main():
     app.add_handler(CommandHandler("diagram", cmd_diagram))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
+    
+    # Photo and Text Doubt Solver Handler (Handles private chat text & any image sent to the bot)
+    app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & (~filters.COMMAND), handle_doubt))
+    
     app.add_handler(PollAnswerHandler(on_poll_answer))
     
     db.init_pdf_db()
@@ -500,7 +592,7 @@ def main():
     app.add_handler(CommandHandler('file', send_file))
     app.add_handler(CommandHandler('files', list_files))
 
-    logger.info("Bot polling with Environment API Key active …")
+    logger.info("Bot polling with Multi-Key & Doubt Solver active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
