@@ -343,7 +343,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
-# DOUBT SOLVER HANDLER (Updated to gemini-1.5-flash-latest)
+# DOUBT SOLVER HANDLER (Using standard 'gemini-1.5-flash' model name)
 async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user_prompt = message.caption or message.text or ""
@@ -383,7 +383,7 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         client = get_gemini_client()
         response = client.models.generate_content(
-            model='gemini-1.5-flash-latest',
+            model='gemini-1.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -402,7 +402,7 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             fallback_client = get_fallback_client()
             response = fallback_client.models.generate_content(
-                model='gemini-1.5-flash-latest',
+                model='gemini-1.5-flash',
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
