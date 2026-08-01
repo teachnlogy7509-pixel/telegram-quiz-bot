@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Admin Settings
 ADMIN_IDS = [8043570403]
 
-# GEMINI CLIENT ROTATION / FALLBACK SETUP (Using Railway Environment Variables)
+# GEMINI CLIENT ROTATION / FALLBACK SETUP
 def get_gemini_client():
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -112,7 +112,6 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode='Markdown')
 
-# Help text
 HELP_TEXT = """
 🤖 Telegram NEET SuperBot
 
@@ -344,7 +343,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
-# DOUBT SOLVER HANDLER
+# DOUBT SOLVER HANDLER (Updated to gemini-1.5-flash-latest)
 async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user_prompt = message.caption or message.text or ""
@@ -384,7 +383,7 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         client = get_gemini_client()
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-1.5-flash-latest',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -403,7 +402,7 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             fallback_client = get_fallback_client()
             response = fallback_client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-1.5-flash-latest',
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -561,7 +560,6 @@ def main():
     
     db.init_pdf_db()
     
-    # FIXED CONVERSATION HANDLER (Correct filter syntax)
     addfile_conv = ConversationHandler(
         entry_points=[CommandHandler('addfile', addfile_start)],
         states={
