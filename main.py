@@ -32,9 +32,6 @@ logger = logging.getLogger(__name__)
 # Admin Settings
 ADMIN_IDS = [8043570403]
 
-# Single API Key Setup (Environment Variable से सुरक्षित तरीका)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 # ADMIN PDF FILE MANAGER LOGIC
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
 
@@ -177,9 +174,9 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
 
     try:
-        questions = await quiz_module.generate_questions(topic, count, style, api_key=GEMINI_API_KEY)
+        questions = await quiz_module.generate_questions(topic, count, style)
     except Exception as exc:
-        await wait_msg.edit_text("❌ Failed to generate questions.")
+        await wait_msg.edit_text(f"❌ Failed to generate questions. Error: {exc}")
         return
 
     if not questions:
