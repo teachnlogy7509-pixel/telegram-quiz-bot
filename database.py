@@ -1,356 +1,235 @@
+"""
+Database operations using SQLite for NEET SuperBot.
+Supports multi-group isolation, scores, ranks, streaks, and PDFs.
+"""
 import sqlite3
-import json
 import logging
 from datetime import datetime
-from config import DB_PATH
 
 logger = logging.getLogger(__name__)
+DB_NAME = "bot_database.db"
 
-def _create_users_table(c):
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id       INTEGER NOT NULL,
-            chat_id       INTEGER NOT NULL DEFAULT 0,
-            username      TEXT,
-            name          TEXT,
-            total_score   INTEGER DEFAULT 0,
-            correct       INTEGER DEFAULT 0,
-            wrong         INTEGER DEFAULT 0,
-            unanswered    INTEGER DEFAULT 0,
-            total_quizzes INTEGER DEFAULT 0,
-            best_score    INTEGER DEFAULT 0,
-            last_quiz_score INTEGER DEFAULT 0,
-            last_activity TEXT,
-            quiz_history  TEXT DEFAULT '[]',
-            xp            INTEGER DEFAULT 0,
-            PRIMARY KEY (user_id, chat_id)
-        )
-    ''')
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    # ── Migrate old single-PK users table → composite (user_id, chat_id) PK ──
-    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
-    if c.fetchone():
-        c.execute("PRAGMA table_info(users)")
-        cols = [row[1] for row in c.fetchall()]
-        if 'chat_id' not in cols:
-            logger.info("Migrating users table to composite PK (user_id, chat_id)…")
-            c.execute("ALTER TABLE users RENAME TO _users_v1")
-            _create_users_table(c)
-            c.execute('''
-                INSERT OR IGNORE INTO users
-                    (user_id, chat_id, username, name,
-                     total_score, correct, wrong, unanswered,
-                     total_quizzes, best_score, last_quiz_score,
-                     last_activity, quiz_history)
-                SELECT user_id, 0, username, name,
-                       total_score, correct, wrong, unanswered,
-                       total_quizzes, best_score, last_quiz_score,
-                       last_activity, quiz_history
-                FROM _users_v1
-            ''')
-    else:
-        _create_users_table(c)
-
-    # Add XP column if it doesn't exist (for existing users)
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN xp INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS quiz_results (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            chat_id    INTEGER NOT NULL,
-            username   TEXT,
-            name       TEXT,
-            correct    INTEGER DEFAULT 0,
-            wrong      INTEGER DEFAULT 0,
-            unanswered INTEGER DEFAULT 0,
-            score      INTEGER DEFAULT 0,
-            topic      TEXT,
-            total      INTEGER DEFAULT 0,
-            date       TEXT NOT NULL
-        )
-    ''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_qr_chat_date ON quiz_results (chat_id, date)')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS group_settings (
-            chat_id       INTEGER PRIMARY KEY,
-            timer_seconds INTEGER NOT NULL DEFAULT 30
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS schedules (
-            chat_id INTEGER PRIMARY KEY,
-            topic   TEXT    NOT NULL,
-            count   INTEGER NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1
-        )
-    ''')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS pdfs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_id TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            uploaded_by INTEGER,
-            uploaded_at TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    logger.info("Database initialised at %s", DB_PATH)
-
-def _connect():
-    conn = sqlite3.connect(DB_PATH)
+def get_connection():
+    conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
-def ensure_user(user_id: int, chat_id: int, username: str, name: str):
-    conn = _connect()
-    try:
-        conn.execute('''
-            INSERT INTO users (user_id, chat_id, username, name, last_activity)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, chat_id) DO UPDATE SET
-                username      = excluded.username,
-                name          = excluded.name,
-                last_activity = excluded.last_activity
-        ''', (user_id, chat_id, username or "", name or "User",
-              datetime.utcnow().isoformat()))
-        conn.commit()
-    finally:
-        conn.close()
-
-def save_quiz_result(user_id: int, chat_id: int, correct: int, wrong: int,
-                     unanswered: int, score: int, topic: str, total: int):
-    conn = _connect()
-    try:
-        row = conn.execute(
-            'SELECT * FROM users WHERE user_id = ? AND chat_id = ?',
-            (user_id, chat_id)
-        ).fetchone()
-        if not row:
-            return
-
-        new_total_score   = row['total_score'] + score
-        new_correct       = row['correct'] + correct
-        new_wrong         = row['wrong'] + wrong
-        new_unanswered    = row['unanswered'] + unanswered
-        new_total_quizzes = row['total_quizzes'] + 1
-        new_best          = max(row['best_score'], score)
-        # Add 10 XP for every correct answer
-        new_xp            = row.get('xp', 0) + (correct * 10)
-
-        history = json.loads(row['quiz_history'] or '[]')
-        history.append({
-            'topic': topic, 'total': total, 'correct': correct,
-            'wrong': wrong, 'unanswered': unanswered, 'score': score,
-            'date': datetime.utcnow().isoformat()
-        })
-        history = history[-50:]
-
-        conn.execute('''
-            UPDATE users SET
-                total_score   = ?, correct       = ?, wrong         = ?,
-                unanswered    = ?, total_quizzes = ?, best_score    = ?,
-                last_quiz_score = ?, last_activity = ?, quiz_history = ?, xp = ?
-            WHERE user_id = ? AND chat_id = ?
-        ''', (
-            new_total_score, new_correct, new_wrong, new_unanswered,
-            new_total_quizzes, new_best, score,
-            datetime.utcnow().isoformat(), json.dumps(history), new_xp,
-            user_id, chat_id
-        ))
-
-        today = datetime.utcnow().date().isoformat()
-        conn.execute('''
-            INSERT INTO quiz_results
-                (user_id, chat_id, username, name, correct, wrong, unanswered, score, topic, total, date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, chat_id, row['username'], row['name'],
-              correct, wrong, unanswered, score, topic, total, today))
-        conn.commit()
-    finally:
-        conn.close()
-
-def add_xp(user_id: int, chat_id: int, amount: int):
-    """Add XP for chatting in the group."""
-    conn = _connect()
-    try:
-        conn.execute('UPDATE users SET xp = COALESCE(xp, 0) + ? WHERE user_id = ? AND chat_id = ?', (amount, user_id, chat_id))
-        conn.commit()
-    finally:
-        conn.close()
-
-def get_latest_group_for_user(user_id: int):
-    """Find the group where user was last active (For confessions)."""
-    conn = _connect()
-    try:
-        row = conn.execute('SELECT chat_id FROM users WHERE user_id = ? AND chat_id < 0 ORDER BY last_activity DESC LIMIT 1', (user_id,)).fetchone()
-        return row['chat_id'] if row else None
-    finally:
-        conn.close()
-
-def get_user(user_id: int, chat_id: int):
-    conn = _connect()
-    try:
-        return conn.execute('SELECT * FROM users WHERE user_id = ? AND chat_id = ?', (user_id, chat_id)).fetchone()
-    finally:
-        conn.close()
-
-def get_leaderboard(chat_id: int, limit: int = 10):
-    conn = _connect()
-    try:
-        return conn.execute('''
-            SELECT user_id, name, username, total_score, correct, wrong, unanswered, total_quizzes
-            FROM users WHERE chat_id = ? ORDER BY total_score DESC LIMIT ?
-        ''', (chat_id, limit)).fetchall()
-    finally:
-        conn.close()
-
-def get_rank(user_id: int, chat_id: int):
-    conn = _connect()
-    try:
-        result = conn.execute('''
-            SELECT COUNT(*) + 1 AS rank FROM users
-            WHERE chat_id = ? AND total_score > (
-                SELECT COALESCE(total_score, 0) FROM users WHERE user_id = ? AND chat_id = ?
-            )
-        ''', (chat_id, user_id, chat_id)).fetchone()
-        return result['rank'] if result else 1
-    finally:
-        conn.close()
-
-def reset_score(user_id: int, chat_id: int):
-    conn = _connect()
-    try:
-        conn.execute('''
-            UPDATE users SET total_score = 0, correct = 0, wrong = 0, unanswered = 0,
-            total_quizzes = 0, best_score = 0, last_quiz_score = 0, quiz_history = '[]'
-            WHERE user_id = ? AND chat_id = ?
-        ''', (user_id, chat_id))
-        conn.execute('DELETE FROM quiz_results WHERE user_id = ? AND chat_id = ?', (user_id, chat_id))
-        conn.commit()
-    finally:
-        conn.close()
-
-def get_group_timer(chat_id: int) -> int:
-    conn = _connect()
-    try:
-        row = conn.execute('SELECT timer_seconds FROM group_settings WHERE chat_id = ?', (chat_id,)).fetchone()
-        return int(row['timer_seconds']) if row else 30
-    finally:
-        conn.close()
-
-def set_group_timer(chat_id: int, seconds: int):
-    conn = _connect()
-    try:
-        conn.execute('''
-            INSERT INTO group_settings (chat_id, timer_seconds) VALUES (?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET timer_seconds = excluded.timer_seconds
-        ''', (chat_id, seconds))
-        conn.commit()
-    finally:
-        conn.close()
-
-def set_schedule(chat_id: int, topic: str, count: int):
-    conn = _connect()
-    try:
-        conn.execute('''
-            INSERT INTO schedules (chat_id, topic, count, enabled) VALUES (?, ?, ?, 1)
-            ON CONFLICT(chat_id) DO UPDATE SET topic = excluded.topic, count = excluded.count, enabled = 1
-        ''', (chat_id, topic, count))
-        conn.commit()
-    finally:
-        conn.close()
-
-def remove_schedule(chat_id: int):
-    conn = _connect()
-    try:
-        conn.execute('DELETE FROM schedules WHERE chat_id = ?', (chat_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-def get_schedule(chat_id: int):
-    conn = _connect()
-    try:
-        return conn.execute('SELECT * FROM schedules WHERE chat_id = ? AND enabled = 1', (chat_id,)).fetchone()
-    finally:
-        conn.close()
-
-def get_all_schedules() -> list:
-    conn = _connect()
-    try:
-        return conn.execute('SELECT * FROM schedules WHERE enabled = 1').fetchall()
-    finally:
-        conn.close()
-
-def get_today_stats(chat_id: int, limit: int = 10):
-    today = datetime.utcnow().date().isoformat()
-    conn = _connect()
-    try:
-        return conn.execute('''
-            SELECT qr.user_id, COALESCE(u.name, qr.name) AS name, COALESCE(u.username, qr.username) AS username,
-                   SUM(qr.correct) AS correct, SUM(qr.wrong) AS wrong, SUM(qr.unanswered) AS unanswered,
-                   SUM(qr.score) AS today_score, COUNT(*) AS quizzes
-            FROM quiz_results qr
-            LEFT JOIN users u ON u.user_id = qr.user_id AND u.chat_id = qr.chat_id
-            WHERE qr.chat_id = ? AND qr.date = ?
-            GROUP BY qr.user_id ORDER BY today_score DESC LIMIT ?
-        ''', (chat_id, today, limit)).fetchall()
-    finally:
-        conn.close()
-
-# --- ADMIN PDF FILE MANAGER DATABASE CODE ---
-def init_pdf_db():
-    conn = sqlite3.connect('scores.db')
+def init_db():
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS pdf_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            file_id TEXT,
-            uploader_id INTEGER,
-            upload_date TIMESTAMP
+    
+    # Users table with group isolation (chat_id + user_id composite or individual tracking)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER,
+            chat_id INTEGER,
+            username TEXT,
+            name TEXT,
+            xp INTEGER DEFAULT 0,
+            total_score INTEGER DEFAULT 0,
+            correct INTEGER DEFAULT 0,
+            wrong INTEGER DEFAULT 0,
+            unanswered INTEGER DEFAULT 0,
+            total_quizzes INTEGER DEFAULT 0,
+            best_score INTEGER DEFAULT 0,
+            last_quiz_score INTEGER DEFAULT 0,
+            streak INTEGER DEFAULT 0,
+            last_active TEXT,
+            PRIMARY KEY (user_id, chat_id)
         )
-    ''')
+    """)
+
+    # Group settings (like timers)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_settings (
+            chat_id INTEGER PRIMARY KEY,
+            timer INTEGER DEFAULT 30
+        )
+    """)
+
+    # PDF storage table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pdf_files (
+            file_name TEXT PRIMARY KEY,
+            file_id TEXT,
+            uploader_id INTEGER
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+    logger.info("Database initialized successfully with multi-group support.")
+
+def ensure_user(user_id: int, chat_id: int, username: str, name: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO users (user_id, chat_id, username, name, last_active)
+        VALUES (?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(user_id, chat_id) DO UPDATE SET
+            username = excluded.username,
+            name = excluded.name,
+            last_active = datetime('now')
+    """, (user_id, chat_id, username or "", name or "User"))
     conn.commit()
     conn.close()
 
-def save_pdf(name, file_id, uploader_id):
-    conn = sqlite3.connect('scores.db')
+def add_xp(user_id: int, chat_id: int, amount: int = 1):
+    conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users SET xp = xp + ? WHERE user_id = ? AND chat_id = ?
+    """, (amount, user_id, chat_id))
+    conn.commit()
+    conn.close()
+
+def save_quiz_result(user_id: int, chat_id: int, correct: int, wrong: int, unanswered: int, score: int, topic: str, total: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT total_score, best_score, correct, wrong, unanswered, total_quizzes, streak 
+        FROM users WHERE user_id = ? AND chat_id = ?
+    """, (user_id, chat_id))
+    row = cursor.fetchone()
+    
+    if row:
+        new_total_score = row["total_score"] + score
+        new_correct = row["correct"] + correct
+        new_wrong = row["wrong"] + wrong
+        new_unanswered = row["unanswered"] + unanswered
+        new_quizzes = row["total_quizzes"] + 1
+        new_best = max(row["best_score"], score)
+        new_streak = row["streak"] + 1 if score > 0 else 0
+        
+        cursor.execute("""
+            UPDATE users SET 
+                total_score = ?, correct = ?, wrong = ?, unanswered = ?, 
+                total_quizzes = ?, best_score = ?, last_quiz_score = ?, streak = ?, last_active = datetime('now')
+            WHERE user_id = ? AND chat_id = ?
+        """, (new_total_score, new_correct, new_wrong, new_unanswered, new_quizzes, new_best, score, new_streak, user_id, chat_id))
+    
+    conn.commit()
+    conn.close()
+
+def get_leaderboard(chat_id: int, limit: int = 10):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM users WHERE chat_id = ? 
+        ORDER BY total_score DESC LIMIT ?
+    """, (chat_id, limit))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def get_user(user_id: int, chat_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_rank(user_id: int, chat_id: int) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COUNT(*) + 1 as rank FROM users 
+        WHERE chat_id = ? AND total_score > (
+            SELECT COALESCE(total_score, 0) FROM users WHERE user_id = ? AND chat_id = ?
+        )
+    """, (chat_id, user_id, chat_id))
+    res = cursor.fetchone()
+    conn.close()
+    return res["rank"] if res else 1
+
+def get_user_rank_info(user_id: int, chat_id: int):
+    user = get_user(user_id, chat_id)
+    if not user:
+        return None
+    user["rank"] = get_rank(user_id, chat_id)
+    return user
+
+def get_today_top(chat_id: int, limit: int = 10):
+    # चूंकि हम हर रिजल्ट सेव कर रहे हैं, आज के टॉप स्कोर के लिए कुल स्कोर या हालिया स्कोर दिखा सकते हैं
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT *, last_quiz_score as score FROM users 
+        WHERE chat_id = ? AND date(last_active) = date('now')
+        ORDER BY last_quiz_score DESC LIMIT ?
+    """, (chat_id, limit))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def get_latest_group_for_user(user_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT chat_id FROM users WHERE user_id = ? AND chat_id < 0 
+        ORDER BY last_active DESC LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["chat_id"] if row else None
+
+def set_group_timer(chat_id: int, timer: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO group_settings (chat_id, timer) VALUES (?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET timer = excluded.timer
+    """, (chat_id, timer))
+    conn.commit()
+    conn.close()
+
+def get_group_timer(chat_id: int) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT timer FROM group_settings WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["timer"] if row and row["timer"] else 30
+
+# PDF Management Functions
+def init_pdf_db():
+    pass # init_db() पहले ही टेबल बना देता है
+
+def save_pdf(file_name: str, file_id: str, uploader_id: int) -> bool:
     try:
-        cursor.execute("INSERT INTO pdf_files (name, file_id, uploader_id, upload_date) VALUES (?, ?, ?, ?)",
-                       (name.lower(), file_id, uploader_id, datetime.now()))
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO pdf_files (file_name, file_id, uploader_id) VALUES (?, ?, ?)", (file_name, file_id, uploader_id))
         conn.commit()
+        conn.close()
         return True
     except sqlite3.IntegrityError:
         return False
-    finally:
-        conn.close()
 
-def get_pdf(name):
-    conn = sqlite3.connect('scores.db')
+def get_pdf(file_name: str):
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT file_id FROM pdf_files WHERE name = ?", (name.lower(),))
-    result = cursor.fetchone()
+    cursor.execute("SELECT file_id FROM pdf_files WHERE file_name LIKE ?", (f"%{file_name}%",))
+    row = cursor.fetchone()
     conn.close()
-    return result[0] if result else None
+    return row["file_id"] if row else None
 
 def list_pdfs():
-    conn = sqlite3.connect('scores.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM pdf_files ORDER BY name")
-    results = cursor.fetchall()
+    conn = get_connection()
+    cursor.cursor = conn.cursor()
+    cursor.execute("SELECT file_name FROM pdf_files")
+    rows = cursor.fetchall()
     conn.close()
-    return [row[0] for row in results]
+    return [r["file_name"] for r in rows]
+
+def reset_score(user_id: int, chat_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users SET total_score = 0, correct = 0, wrong = 0, unanswered = 0, total_quizzes = 0, best_score = 0, streak = 0
+        WHERE user_id = ? AND chat_id = ?
+    """, (user_id, chat_id))
+    conn.commit()
+    conn.close()
