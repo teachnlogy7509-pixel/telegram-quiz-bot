@@ -344,7 +344,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await msg.edit_text("❌ माफ़ करें, यह गाना नहीं मिल पाया।")
 
-# DOUBT SOLVER HANDLER (Updated to gemini-1.5-flash)
+# DOUBT SOLVER HANDLER
 async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user_prompt = message.caption or message.text or ""
@@ -382,7 +382,6 @@ async def handle_doubt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_prompt:
             contents.append(user_prompt)
 
-        # Primary Client Call (Using gemini-1.5-flash)
         client = get_gemini_client()
         response = client.models.generate_content(
             model='gemini-1.5-flash',
@@ -561,11 +560,13 @@ def main():
     app.add_handler(PollAnswerHandler(on_poll_answer))
     
     db.init_pdf_db()
+    
+    # FIXED CONVERSATION HANDLER (Correct filter syntax)
     addfile_conv = ConversationHandler(
         entry_points=[CommandHandler('addfile', addfile_start)],
         states={
             WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, addfile_receive_file)],
-            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & (~filters.COMMAND, addfile_receive_name))]
+            WAITING_FOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addfile_receive_name)]
         },
         fallbacks=[CommandHandler('cancel', addfile_cancel)]
     )
@@ -575,7 +576,6 @@ def main():
     app.add_handler(CommandHandler('files', list_files))
 
     logger.info("Bot polling with Multi-Key & Doubt Solver active …")
-    # drop_pending_updates=True से 409 Conflict (multiple instance error) खत्म हो जाएगा
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
