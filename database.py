@@ -1,6 +1,6 @@
 """
 Database operations using SQLite for NEET SuperBot.
-Supports multi-group isolation, scores, ranks, streaks, schedules, and PDFs.
+Supports multi-group isolation, scores, ranks, streaks, schedules, PDFs, and Bot On/Off status.
 """
 import sqlite3
 import logging
@@ -18,7 +18,6 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Users table with group isolation
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER,
@@ -39,7 +38,6 @@ def init_db():
         )
     """)
 
-    # Group settings (timers)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS group_settings (
             chat_id INTEGER PRIMARY KEY,
@@ -47,7 +45,6 @@ def init_db():
         )
     """)
 
-    # Schedules table for daily quizzes
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS schedules (
             chat_id INTEGER PRIMARY KEY,
@@ -56,7 +53,6 @@ def init_db():
         )
     """)
 
-    # PDF storage table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pdf_files (
             file_name TEXT PRIMARY KEY,
@@ -65,9 +61,36 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_status (
+            chat_id INTEGER PRIMARY KEY,
+            is_active INTEGER DEFAULT 1
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully.")
+
+def set_bot_status(chat_id: int, active: bool):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO bot_status (chat_id, is_active) VALUES (?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET is_active = excluded.is_active
+    """, (chat_id, 1 if active else 0))
+    conn.commit()
+    conn.close()
+
+def is_bot_active(chat_id: int) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_active FROM bot_status WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return True
+    return bool(row["is_active"])
 
 def ensure_user(user_id: int, chat_id: int, username: str, name: str):
     conn = get_connection()
@@ -194,7 +217,6 @@ def get_group_timer(chat_id: int) -> int:
     conn.close()
     return row["timer"] if row and row["timer"] else 30
 
-# Scheduler Functions (Missing functions added here)
 def get_all_schedules():
     conn = get_connection()
     cursor = conn.cursor()
@@ -220,7 +242,6 @@ def remove_schedule_db(chat_id: int):
     conn.commit()
     conn.close()
 
-# PDF Management Functions
 def init_pdf_db():
     pass
 
