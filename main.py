@@ -19,7 +19,7 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
-from quiz import verify_gemini_key
+from quiz import verify_gemini_key, model
 
 # Logging
 logging.basicConfig(
@@ -36,10 +36,12 @@ ADMIN_IDS = [8043570403]
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+    
     if update.message and update.message.text:
         text = update.message.text.strip()
-        if text.startswith(('/on', '/off')) and user_id in ADMIN_IDS:
+        if text.startswith('/on') and user_id in ADMIN_IDS:
             return True
+            
     return db.is_bot_active(chat_id)
 
 async def cmd_bot_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,15 +124,17 @@ HELP_TEXT = """
 /on — Turn Bot ON
 /off — Turn Bot OFF
 
-📚 Quiz Commands:
+📚 Quiz & Study Commands:
 /quiz <topic> <number> — Start a quiz
 /pyq <topic> <number> — PYQ-style quiz
 /timer <15|30|45|60> — Set quiz timer
-/schedule <topic> <number> — Daily quiz
+/viva <topic> — AI Virtual Oral Examiner
+/symptom <problem> — Concept Diagnosis Report
 
 🎯 NEET Special:
 /countdown — Mega Exam Countdown
 /pomodoro — 25 Min Focus Study Timer
+/prescription — Dr. Bot's Fun Prescription
 /motivate — Instant Motivation Dose
 /routine — PW Dropper Live Batch Tracker
 /diagram — NCERT Biology Diagram Quiz
@@ -291,6 +295,78 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = answer.user.username or ""
         await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, username, answer.poll_id, answer.option_ids[0])
 
+# ==========================================
+# NEW FEATURES: /viva, /prescription, /symptom
+# ==========================================
+async def cmd_viva(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("⚠️ इस्तेमाल का तरीका: `/viva <टॉपिक>`\nउदाहरण: `/viva Physics Alternating Current`", parse_mode="Markdown")
+        return
+    
+    topic = " ".join(args)
+    user = update.effective_user.first_name
+    prompt = f"Act as a strict medical/engineering entrance viva examiner. Ask one conceptual and tricky viva question on the topic '{topic}' for a NEET aspirant. Keep it concise, professional, and challenging."
+    
+    msg = await update.message.reply_text(f"👨‍🏫 *Professor AI is entering the Viva Room for {user}…*\nTopic: *{topic}*", parse_mode="Markdown")
+    try:
+        response = model.generate_content(prompt)
+        await msg.edit_text(
+            f"🎓 *VIVA EXAMINATION — PROFESSOR AI*\n"
+            f"👤 *Candidate:* {user}\n"
+            f"📖 *Topic:* {topic}\n\n"
+            f"❓ *Question:* {response.text}\n\n"
+            f"💡 *जवाब देने के लिए बस इस मैसेज का रिप्लाई (Reply) करके अपना उत्तर लिखें!*",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await msg.edit_text(f"❌ वाइवा शुरू करने में दिक्कत आई: {e}")
+
+async def cmd_prescription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    user = update.effective_user.first_name
+    rx_text = f"""
+📋 *DR. BOT'S DIGITAL PRESCRIPTION SLIP* 🩺
+--------------------------------------------------
+👤 **Patient Name:** {user}  
+📅 **Date:** Today (Emergency NEET Ward)  
+--------------------------------------------------
+Rx:
+1. **Sleep-Tab 8Hours** — रात को बिना फोन चलाए पूरी नींद लें (दिन में 1 बार)।
+2. **Physics-Num-Syrup** — रोज सुबह उठकर कम से कम 20 न्यूमेरिकल की खुराक लें।
+3. **NCERT-Drops** — हर खाने के बाद बायोलॉजी की लाइन-बाय-लाइन आँखें बंद करके रिवीजन करें।
+4. **Motivation-Injections** — जब भी डिप्रेशन हो, आईने में देखकर बोलें 'I can do it!' 💉
+
+⚠️ **Warning:** डॉक्टर (बोट) की सलाह के बिना रील्स चलाना सख्त मना है!  
+--------------------------------------------------
+*Get Well Soon & Crack NEET 2027!* 🚀
+""".strip()
+    await update.message.reply_text(rx_text, parse_mode="Markdown")
+
+async def cmd_symptom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("⚠️ इस्तेमाल का तरीका: `/symptom <आपकी समस्या या टॉपिक>`\nउदाहरण: `/symptom मुझे Mole Concept समझ नहीं आता`", parse_mode="Markdown")
+        return
+    
+    problem = " ".join(args)
+    msg = await update.message.reply_text("🩺 *Diagnosing your study problem... कृपया प्रतीक्षा करें।*", parse_mode="Markdown")
+    prompt = f"A NEET student is facing this conceptual weakness/problem: '{problem}'. Diagnose this study 'symptom' and provide a short, ultra-simplified concept breakdown, a memory trick, and a quick remedy in a friendly doctor/mentor tone (Hinglish/English)."
+    
+    try:
+        response = model.generate_content(prompt)
+        await msg.edit_text(
+            f"🔬 *CONCEPT DIAGNOSIS REPORT*\n\n"
+            f"⚠️ *Symptom:* {problem}\n\n"
+            f"{response.text}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await msg.edit_text(f"❌ डायग्नोसिस करने में दिक्कत आई: {e}")
+
+# Fun & Special Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     await update.message.reply_text("चाँदनी चाँद से होती है, सितारों से नहीं... ❤️")
@@ -404,9 +480,11 @@ def main():
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
 
+    # Admin Control Handlers
     app.add_handler(CommandHandler("on", cmd_bot_on))
     app.add_handler(CommandHandler("off", cmd_bot_off))
 
+    # Core & Quiz Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
@@ -420,6 +498,12 @@ def main():
     app.add_handler(CommandHandler("scheduleoff", cmd_scheduleoff))
     app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
     
+    # New Features Handlers
+    app.add_handler(CommandHandler("viva", cmd_viva))
+    app.add_handler(CommandHandler("prescription", cmd_prescription))
+    app.add_handler(CommandHandler("symptom", cmd_symptom))
+
+    # Fun & Special Handlers
     app.add_handler(CommandHandler("shayari", cmd_shayari))
     app.add_handler(CommandHandler("gm", cmd_gm))
     app.add_handler(CommandHandler("lovememe", cmd_lovememe))
