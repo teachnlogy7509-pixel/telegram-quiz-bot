@@ -19,7 +19,8 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
-from quiz import verify_gemini_key, model
+from quiz import verify_gemini_key
+from google import genai
 
 # Logging
 logging.basicConfig(
@@ -28,6 +29,9 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+# Gemini Model Direct Setup for Viva & Symptom
+gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 # Admin Settings
 ADMIN_IDS = [8043570403]
@@ -311,7 +315,10 @@ async def cmd_viva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = await update.message.reply_text(f"👨‍🏫 *Professor AI is entering the Viva Room for {user}…*\nTopic: *{topic}*", parse_mode="Markdown")
     try:
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
         await msg.edit_text(
             f"🎓 *VIVA EXAMINATION — PROFESSOR AI*\n"
             f"👤 *Candidate:* {user}\n"
@@ -356,7 +363,10 @@ async def cmd_symptom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = f"A NEET student is facing this conceptual weakness/problem: '{problem}'. Diagnose this study 'symptom' and provide a short, ultra-simplified concept breakdown, a memory trick, and a quick remedy in a friendly doctor/mentor tone (Hinglish/English)."
     
     try:
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
         await msg.edit_text(
             f"🔬 *CONCEPT DIAGNOSIS REPORT*\n\n"
             f"⚠️ *Symptom:* {problem}\n\n"
