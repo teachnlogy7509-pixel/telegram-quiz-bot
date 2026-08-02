@@ -12,7 +12,7 @@ from typing import NamedTuple
 
 from google import genai
 from google.genai import types as genai_types
-from telegram import Bot
+from telegram import Bot, ChatPermissions
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
@@ -451,3 +451,16 @@ async def finish_group_quiz(bot: Bot, session: dict):
         await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode=ParseMode.MARKDOWN)
     except TelegramError as exc:
         logger.error("Group result card failed: %s", exc)
+
+    # क्विज़ खत्म होने के बाद ग्रुप की चैट रोक दें (Restrict chat permissions)
+    try:
+        await bot.set_chat_permissions(
+            chat_id=chat_id,
+            permissions=ChatPermissions(can_send_messages=False)
+        )
+        await bot.send_message(
+            chat_id=chat_id,
+            text="🔒 क्विज़ समाप्त हो गया है! एडमिन द्वारा चैट दोबारा खोले जाने तक मेंबर्स मैसेज नहीं भेज सकते।"
+        )
+    except TelegramError as exc:
+        logger.error(f"Failed to restrict group chat permissions: {exc}")
