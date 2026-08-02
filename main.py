@@ -132,8 +132,6 @@ HELP_TEXT = """
 /quiz <topic> <number> — Start a quiz
 /pyq <topic> <number> — PYQ-style quiz
 /timer <15|30|45|60> — Set quiz timer
-/viva <topic> — AI Virtual Oral Examiner
-/symptom <problem> — Concept Diagnosis Report
 
 🎯 NEET Special:
 /countdown — Mega Exam Countdown
@@ -299,37 +297,6 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = answer.user.username or ""
         await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, username, answer.poll_id, answer.option_ids[0])
 
-# ==========================================
-# NEW FEATURES: /viva, /prescription, /symptom
-# ==========================================
-async def cmd_viva(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    args = context.args or []
-    if not args:
-        await update.message.reply_text("⚠️ इस्तेमाल का तरीका: `/viva <टॉपिक>`\nउदाहरण: `/viva Physics Alternating Current`", parse_mode="Markdown")
-        return
-    
-    topic = " ".join(args)
-    user = update.effective_user.first_name
-    prompt = f"Act as a strict medical/engineering entrance viva examiner. Ask one conceptual and tricky viva question on the topic '{topic}' for a NEET aspirant. Keep it concise, professional, and challenging."
-    
-    msg = await update.message.reply_text(f"👨‍🏫 *Professor AI is entering the Viva Room for {user}…*\nTopic: *{topic}*", parse_mode="Markdown")
-    try:
-        response = gemini_client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
-        await msg.edit_text(
-            f"🎓 *VIVA EXAMINATION — PROFESSOR AI*\n"
-            f"👤 *Candidate:* {user}\n"
-            f"📖 *Topic:* {topic}\n\n"
-            f"❓ *Question:* {response.text}\n\n"
-            f"💡 *जवाब देने के लिए बस इस मैसेज का रिप्लाई (Reply) करके अपना उत्तर लिखें!*",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await msg.edit_text(f"❌ वाइवा शुरू करने में दिक्कत आई: {e}")
-
 async def cmd_prescription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     user = update.effective_user.first_name
@@ -350,31 +317,6 @@ Rx:
 *Get Well Soon & Crack NEET 2027!* 🚀
 """.strip()
     await update.message.reply_text(rx_text, parse_mode="Markdown")
-
-async def cmd_symptom(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    args = context.args or []
-    if not args:
-        await update.message.reply_text("⚠️ इस्तेमाल का तरीका: `/symptom <आपकी समस्या या टॉपिक>`\nउदाहरण: `/symptom मुझे Mole Concept समझ नहीं आता`", parse_mode="Markdown")
-        return
-    
-    problem = " ".join(args)
-    msg = await update.message.reply_text("🩺 *Diagnosing your study problem... कृपया प्रतीक्षा करें।*", parse_mode="Markdown")
-    prompt = f"A NEET student is facing this conceptual weakness/problem: '{problem}'. Diagnose this study 'symptom' and provide a short, ultra-simplified concept breakdown, a memory trick, and a quick remedy in a friendly doctor/mentor tone (Hinglish/English)."
-    
-    try:
-        response = gemini_client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
-        await msg.edit_text(
-            f"🔬 *CONCEPT DIAGNOSIS REPORT*\n\n"
-            f"⚠️ *Symptom:* {problem}\n\n"
-            f"{response.text}",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await msg.edit_text(f"❌ डायग्नोसिस करने में दिक्कत आई: {e}")
 
 # Fun & Special Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -508,10 +450,8 @@ def main():
     app.add_handler(CommandHandler("scheduleoff", cmd_scheduleoff))
     app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
     
-    # New Features Handlers
-    app.add_handler(CommandHandler("viva", cmd_viva))
+    # Prescription Handler
     app.add_handler(CommandHandler("prescription", cmd_prescription))
-    app.add_handler(CommandHandler("symptom", cmd_symptom))
 
     # Fun & Special Handlers
     app.add_handler(CommandHandler("shayari", cmd_shayari))
