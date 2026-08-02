@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Gemini Model Direct Setup for Viva & Symptom
+# Gemini Model Setup
 gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 # Admin Settings
@@ -316,7 +316,7 @@ async def cmd_viva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(f"👨‍🏫 *Professor AI is entering the Viva Room for {user}…*\nTopic: *{topic}*", parse_mode="Markdown")
     try:
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt
         )
         await msg.edit_text(
@@ -364,7 +364,7 @@ async def cmd_symptom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt
         )
         await msg.edit_text(
