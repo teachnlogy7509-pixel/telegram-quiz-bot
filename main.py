@@ -468,9 +468,8 @@ def main():
     app.add_handler(CommandHandler("diagram", cmd_diagram))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
-    app.add_handler(PollAnswerHandler(on_poll_answer))
-    
+
+    # PDF File Manager Handlers (Placed before normal message handler)
     db.init_pdf_db()
     addfile_conv = ConversationHandler(
         entry_points=[CommandHandler('addfile', addfile_start)],
@@ -483,6 +482,10 @@ def main():
     app.add_handler(addfile_conv)
     app.add_handler(CommandHandler('file', send_file))
     app.add_handler(CommandHandler('files', list_files))
+
+    # General Handlers
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
+    app.add_handler(PollAnswerHandler(on_poll_answer))
 
     logger.info("Bot polling with Environment API Key active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
