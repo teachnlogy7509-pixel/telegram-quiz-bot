@@ -357,16 +357,59 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ इस्तेमाल का तरीका: /song <गाने का नाम>")
         return
     msg = await update.message.reply_text("🎵 गाना ढूँढ कर डाउनलोड किया जा रहा है...")
-    ydl_opts = {'format': 'm4a/bestaudio/best', 'outtmpl': 'downloaded_song.%(ext)s', 'noplaylist': True, 'quiet': True}
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'downloaded_song.%(ext)s',
+        'noplaylist': True,
+        'quiet': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+    
+    audio_file = None
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch:{song_name}", download=True)
-            audio_file = ydl.prepare_filename(info['entries'][0])
-            await context.bot.send_audio(chat_id=update.effective_chat.id, audio=open(audio_file, 'rb'), caption=f"🎧 {song_name}")
-            os.remove(audio_file)
+        def download_audio():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch1:{song_name}", download=True)
+                if 'entries' in info:
+                    info = info['entries'][0]
+                return ydl.prepare_filename(info)
+
+        loop = asyncio.get_running_loop()
+        raw_file = await loop.run_in_executor(None, download_audio)
+        
+        base, _ = os.path.splitext(raw_file)
+        audio_file = base + ".mp3"
+        
+        if os.path.exists(audio_file):
+            with open(audio_file, 'rb') as audio:
+                await context.bot.send_audio(
+                    chat_id=update.effective_chat.id, 
+                    audio=audio, 
+                    caption=f"🎧 {song_name}"
+                )
             await msg.delete()
-    except Exception:
-        await msg.edit_text("❌ गाना नहीं मिल पाया।")
+        else:
+            await msg.edit_text("❌ गाना भेजने के लिए तैयार नहीं हो पाया।")
+            
+    except Exception as e:
+        logger.error(f"Song download error: {e}")
+        await msg.edit_text("❌ गाना नहीं मिल पाया या डाउनलोड करने में एरर आया।")
+    finally:
+        if audio_file and os.path.exists(audio_file):
+            try:
+                os.remove(audio_file)
+            except:
+                pass
+        if 'raw_file' in locals() and raw_file and os.path.exists(raw_file):
+            try:
+                os.remove(raw_file)
+            except:
+                pass
 
 async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
