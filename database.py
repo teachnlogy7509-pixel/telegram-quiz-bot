@@ -243,17 +243,31 @@ def remove_schedule_db(chat_id: int):
     conn.close()
 
 def init_pdf_db():
-    pass
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pdf_files (
+            file_name TEXT PRIMARY KEY,
+            file_id TEXT,
+            uploader_id INTEGER
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 def save_pdf(file_name: str, file_id: str, uploader_id: int) -> bool:
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO pdf_files (file_name, file_id, uploader_id) VALUES (?, ?, ?)", (file_name, file_id, uploader_id))
+        cursor.execute("""
+            INSERT INTO pdf_files (file_name, file_id, uploader_id) VALUES (?, ?, ?)
+            ON CONFLICT(file_name) DO UPDATE SET file_id = excluded.file_id, uploader_id = excluded.uploader_id
+        """, (file_name, file_id, uploader_id))
         conn.commit()
         conn.close()
         return True
-    except sqlite3.IntegrityError:
+    except Exception as e:
+        logger.error(f"Error saving PDF: {e}")
         return False
 
 def get_pdf(file_name: str):
