@@ -359,10 +359,11 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🎵 गाना ढूँढ कर डाउनलोड किया जा रहा है...")
     
     ydl_opts = {
-        'format': 'm4a/bestaudio/best', 
+        'format': 'worstaudio/worst', 
         'outtmpl': 'downloaded_song.%(ext)s', 
         'noplaylist': True, 
-        'quiet': True
+        'quiet': True,
+        'socket_timeout': 15,
     }
     
     audio_file = None
@@ -389,7 +390,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ गाना नहीं मिल पाया।")
     except Exception as e:
         logger.error(f"Song error: {e}")
-        await msg.edit_text("❌ गाना डाउनलोड करने में दिक्कत आई।")
+        await msg.edit_text("❌ गाना डाउनलोड करने में दिक्कत आई (Memory Limit Exceeded)।")
     finally:
         if audio_file and os.path.exists(audio_file):
             try:
