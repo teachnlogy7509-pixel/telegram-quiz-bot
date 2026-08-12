@@ -1,23 +1,30 @@
 """
 Database operations using SQLite for NEET SuperBot.
 Supports multi-group isolation, scores, ranks, streaks, schedules, PDFs, and Bot On/Off status.
+This module was adjusted to use the configured DB path and to safely INSERT user rows
+when saving quiz results or adding XP so data persists and first-time users are handled.
 """
 import sqlite3
 import logging
 from datetime import datetime
 
+import config
+
 logger = logging.getLogger(__name__)
-DB_NAME = "bot_database.db"
+DB_NAME = getattr(config, "DB_PATH", "scores.db")
+
 
 def get_connection():
-    conn = sqlite3.connect(DB_NAME)
+    # Allow usage across threads since telegram handlers may run in threads
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER,
@@ -70,7 +77,8 @@ def init_db():
 
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully.")
+    logger.info("Database initialized successfully. Using %s", DB_NAME)
+
 
 def set_bot_status(chat_id: int, active: bool):
     conn = get_connection()
@@ -82,6 +90,7 @@ def set_bot_status(chat_id: int, active: bool):
     conn.commit()
     conn.close()
 
+
 def is_bot_active(chat_id: int) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
@@ -91,6 +100,7 @@ def is_bot_active(chat_id: int) -> bool:
     if row is None:
         return True
     return bool(row["is_active"])
+
 
 def ensure_user(user_id: int, chat_id: int, username: str, name: str):
     conn = get_connection()
@@ -106,43 +116,58 @@ def ensure_user(user_id: int, chat_id: int, username: str, name: str):
     conn.commit()
     conn.close()
 
+
 def add_xp(user_id: int, chat_id: int, amount: int = 1):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE users SET xp = xp + ? WHERE user_id = ? AND chat_id = ?
-    """, (amount, user_id, chat_id))
+    cursor.execute("UPDATE users SET xp = xp + ? WHERE user_id = ? AND chat_id = ?", (amount, user_id, chat_id))
+    if cursor.rowcount == 0:
+        # user not found - insert with minimal values
+        cursor.execute("""
+            INSERT INTO users (user_id, chat_id, username, name, xp, last_active)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+        """, (user_id, chat_id, "", "User", amount))
     conn.commit()
     conn.close()
+
 
 def save_quiz_result(user_id: int, chat_id: int, correct: int, wrong: int, unanswered: int, score: int, topic: str, total: int):
     conn = get_connection()
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         SELECT total_score, best_score, correct, wrong, unanswered, total_quizzes, streak 
         FROM users WHERE user_id = ? AND chat_id = ?
     """, (user_id, chat_id))
     row = cursor.fetchone()
-    
+
     if row:
-        new_total_score = row["total_score"] + score
-        new_correct = row["correct"] + correct
-        new_wrong = row["wrong"] + wrong
-        new_unanswered = row["unanswered"] + unanswered
-        new_quizzes = row["total_quizzes"] + 1
-        new_best = max(row["best_score"], score)
-        new_streak = row["streak"] + 1 if score > 0 else 0
-        
+        new_total_score = (row["total_score"] or 0) + score
+        new_correct = (row["correct"] or 0) + correct
+        new_wrong = (row["wrong"] or 0) + wrong
+        new_unanswered = (row["unanswered"] or 0) + unanswered
+        new_quizzes = (row["total_quizzes"] or 0) + 1
+        new_best = max(row["best_score"] or 0, score)
+        new_streak = (row["streak"] or 0) + 1 if score > 0 else 0
+
         cursor.execute("""
             UPDATE users SET 
                 total_score = ?, correct = ?, wrong = ?, unanswered = ?, 
                 total_quizzes = ?, best_score = ?, last_quiz_score = ?, streak = ?, last_active = datetime('now')
             WHERE user_id = ? AND chat_id = ?
         """, (new_total_score, new_correct, new_wrong, new_unanswered, new_quizzes, new_best, score, new_streak, user_id, chat_id))
-    
+    else:
+        # Insert a fresh row for this user
+        cursor.execute("""
+            INSERT INTO users (user_id, chat_id, username, name, xp, total_score, correct, wrong, unanswered, total_quizzes, best_score, last_quiz_score, streak, last_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """, (
+            user_id, chat_id, "", "User", 0, score, correct, wrong, unanswered, 1, score, score, 1 if score > 0 else 0
+        ))
+
     conn.commit()
     conn.close()
+
 
 def get_leaderboard(chat_id: int, limit: int = 10):
     conn = get_connection()
@@ -155,6 +180,7 @@ def get_leaderboard(chat_id: int, limit: int = 10):
     conn.close()
     return rows
 
+
 def get_user(user_id: int, chat_id: int):
     conn = get_connection()
     cursor = conn.cursor()
@@ -162,6 +188,7 @@ def get_user(user_id: int, chat_id: int):
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
 
 def get_rank(user_id: int, chat_id: int) -> int:
     conn = get_connection()
@@ -176,6 +203,7 @@ def get_rank(user_id: int, chat_id: int) -> int:
     conn.close()
     return res["rank"] if res else 1
 
+
 def get_today_top(chat_id: int, limit: int = 10):
     conn = get_connection()
     cursor = conn.cursor()
@@ -188,6 +216,7 @@ def get_today_top(chat_id: int, limit: int = 10):
     conn.close()
     return rows
 
+
 def get_latest_group_for_user(user_id: int):
     conn = get_connection()
     cursor = conn.cursor()
@@ -199,6 +228,7 @@ def get_latest_group_for_user(user_id: int):
     conn.close()
     return row["chat_id"] if row else None
 
+
 def set_group_timer(chat_id: int, timer: int):
     conn = get_connection()
     cursor = conn.cursor()
@@ -209,6 +239,7 @@ def set_group_timer(chat_id: int, timer: int):
     conn.commit()
     conn.close()
 
+
 def get_group_timer(chat_id: int) -> int:
     conn = get_connection()
     cursor = conn.cursor()
@@ -217,6 +248,7 @@ def get_group_timer(chat_id: int) -> int:
     conn.close()
     return row["timer"] if row and row["timer"] else 30
 
+
 def get_all_schedules():
     conn = get_connection()
     cursor = conn.cursor()
@@ -224,6 +256,7 @@ def get_all_schedules():
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
+
 
 def save_schedule(chat_id: int, topic: str, count: int):
     conn = get_connection()
@@ -235,6 +268,7 @@ def save_schedule(chat_id: int, topic: str, count: int):
     conn.commit()
     conn.close()
 
+
 def remove_schedule_db(chat_id: int):
     conn = get_connection()
     cursor = conn.cursor()
@@ -242,7 +276,9 @@ def remove_schedule_db(chat_id: int):
     conn.commit()
     conn.close()
 
+
 def init_pdf_db():
+    # Already created in init_db but keep idempotent helper
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -254,6 +290,7 @@ def init_pdf_db():
     """)
     conn.commit()
     conn.close()
+
 
 def save_pdf(file_name: str, file_id: str, uploader_id: int) -> bool:
     try:
@@ -270,6 +307,7 @@ def save_pdf(file_name: str, file_id: str, uploader_id: int) -> bool:
         logger.error(f"Error saving PDF: {e}")
         return False
 
+
 def get_pdf(file_name: str):
     conn = get_connection()
     cursor = conn.cursor()
@@ -278,6 +316,7 @@ def get_pdf(file_name: str):
     conn.close()
     return row["file_id"] if row else None
 
+
 def list_pdfs():
     conn = get_connection()
     cursor = conn.cursor()
@@ -285,6 +324,7 @@ def list_pdfs():
     rows = cursor.fetchall()
     conn.close()
     return [r["file_name"] for r in rows]
+
 
 def reset_score(user_id: int, chat_id: int):
     conn = get_connection()
