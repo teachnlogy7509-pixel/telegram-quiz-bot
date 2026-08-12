@@ -14,13 +14,11 @@ from telegram.ext import (Application, CommandHandler, ContextTypes,
                          MessageHandler, PollAnswerHandler, filters, ConversationHandler)
 
 import config
-import database
 import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
 from quiz import verify_gemini_key
-from google import genai
 
 # Logging
 logging.basicConfig(
@@ -30,9 +28,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Gemini Model Setup
-gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
-
 # Admin Settings
 ADMIN_IDS = [8043570403]
 
@@ -40,12 +35,12 @@ ADMIN_IDS = [8043570403]
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    
+
     if update.message and update.message.text:
         text = update.message.text.strip()
         if text.startswith('/on') and user_id in ADMIN_IDS:
             return True
-            
+
     return db.is_bot_active(chat_id)
 
 async def cmd_bot_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,7 +81,7 @@ async def addfile_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
     file_id = context.user_data.get('temp_file_id')
     uploader_id = update.effective_user.id
     if db.save_pdf(file_name, file_id, uploader_id):
-        await update.message.reply_text(f"🎉 फाइल सफलतापूर्वक '{file_name}' नाम से सेव हो गई!")
+        await update.message.reply_text(f"🎉 फाइल सफलतापूर्व�� '{file_name}' नाम से सेव हो गई!")
     else:
         await update.message.reply_text(f"⚠️ '{file_name}' नाम से फाइल पहले ही मौजूद है।")
     context.user_data.clear()
@@ -119,7 +114,7 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📚 Available Files:\n\n"
     for f in files:
         text += f"▪️ `{f}`\n"
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 HELP_TEXT = """
 🤖 Telegram NEET SuperBot
@@ -159,7 +154,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     user    = update.effective_user
     chat_id = update.effective_chat.id
-    database.ensure_user(user.id, chat_id, user.username, user.full_name)
+    db.ensure_user(user.id, chat_id, user.username, user.full_name)
     await update.message.reply_text(f"👋 Welcome, *{user.first_name}*!\n\n{HELP_TEXT}", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,14 +184,15 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
         await update.message.reply_text("⚠️ You already have an active quiz running.")
         return
 
-    database.ensure_user(user.id, chat_id, user.username, user.full_name)
-    timer = database.get_group_timer(chat_id)
+    db.ensure_user(user.id, chat_id, user.username, user.full_name)
+    timer = db.get_group_timer(chat_id)
     wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
 
     try:
         questions = await quiz_module.generate_questions(topic, count, style)
     except Exception as exc:
-        await wait_msg.edit_text(f"❌ Failed to generate questions. Error: {exc}")
+        logger.error("Question generation failed: %s", exc)
+        await wait_msg.edit_text("❌ Failed to generate questions. Gemini may be temporarily unavailable. Please try again later.")
         return
 
     if not questions:
@@ -251,7 +247,7 @@ async def cmd_resetscore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     user = update.effective_user
     chat_id = update.effective_chat.id
-    database.reset_score(user.id, chat_id)
+    db.reset_score(user.id, chat_id)
     await update.message.reply_text(f"🔄 *{user.first_name}*, your score has been reset.", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,8 +257,8 @@ async def cmd_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args or not args[0].isdigit() or int(args[0]) not in {15, 30, 45, 60}:
         await update.message.reply_text("Usage: `/timer 15|30|45|60`", parse_mode=ParseMode.MARKDOWN)
         return
-    database.set_group_timer(chat_id, int(args[0]))
-    await update.message.reply_text(f"✅ Timer set to *{args[0]}s*", parse_mode=ParseMode.MARKDOWN)
+    db.set_group_timer(chat_id, int(args[0]))
+    await update.message.reply_text(f"✅ Timer set to *{args[0]}s", parse_mode=ParseMode.MARKDOWN)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -280,7 +276,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_scheduleoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     sched_module.remove_schedule(update.effective_chat.id)
-    await update.message.reply_text("✅ Schedule turned off.")
+    await update.message.reply_text("✅ Schedule turned off.", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_schedulelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -289,13 +285,15 @@ async def cmd_schedulelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer
     if not answer.option_ids: return
+    # option_ids is a list; pick first
+    selected = answer.option_ids[0]
     if answer.poll_id in quiz_module.poll_to_user:
-        await quiz_module.handle_poll_answer(context.bot, answer.user.id, answer.poll_id, answer.option_ids[0])
+        await quiz_module.handle_poll_answer(context.bot, answer.user.id, answer.poll_id, selected)
     elif answer.poll_id in quiz_module.poll_to_chat:
         chat_id = quiz_module.poll_to_chat[answer.poll_id]
         name = answer.user.full_name or "User"
         username = answer.user.username or ""
-        await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, username, answer.poll_id, answer.option_ids[0])
+        await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, username, answer.poll_id, selected)
 
 async def cmd_prescription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -309,14 +307,14 @@ async def cmd_prescription(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Rx:
 1. **Sleep-Tab 8Hours** — रात को बिना फोन चलाए पूरी नींद लें (दिन में 1 बार)।
 2. **Physics-Num-Syrup** — रोज सुबह उठकर कम से कम 20 न्यूमेरिकल की खुराक लें।
-3. **NCERT-Drops** — हर खाने के बाद बायोलॉजी की लाइन-बाय-लाइन आँखें बंद करके रिवीजन करें।
+3. **NCERT-Drops** — हर खाने के बाद बायोलॉजी की लाइन-बाय-लाइन आँखें बंद करके रिवीजन करे।
 4. **Motivation-Injections** — जब भी डिप्रेशन हो, आईने में देखकर बोलें 'I can do it!' 💉
 
 ⚠️ **Warning:** डॉक्टर (बोट) की सलाह के बिना रील्स चलाना सख्त मना है!  
 --------------------------------------------------
 *Get Well Soon & Crack NEET 2027!* 🚀
 """.strip()
-    await update.message.reply_text(rx_text, parse_mode="Markdown")
+    await update.message.reply_text(rx_text, parse_mode=ParseMode.MARKDOWN)
 
 # Fun & Special Commands
 async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -345,7 +343,7 @@ async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ पहले मेन ग्रुप में एक मैसेज भेजें!")
         return
     try:
-        await context.bot.send_message(chat_id=group_id, text=f"🤫 *New Confession:*\n\n{confession_text}", parse_mode="Markdown")
+        await context.bot.send_message(chat_id=group_id, text=f"🤫 *New Confession:*\n\n{confession_text}", parse_mode=ParseMode.MARKDOWN)
         await update.message.reply_text("✅ मैसेज भेज दिया गया है!")
     except Exception:
         await update.message.reply_text("❌ मैसेज भेजने में दिक्कत आई।")
@@ -357,7 +355,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ इस्तेमाल का तरीका: /song <गाने का नाम>")
         return
     msg = await update.message.reply_text("🎵 गाना ढूँढ कर डाउनलोड किया जा रहा है...")
-    
+
     ydl_opts = {
         'format': 'worstaudio/worst', 
         'outtmpl': 'downloaded_song.%(ext)s', 
@@ -365,7 +363,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'quiet': True,
         'socket_timeout': 15,
     }
-    
+
     audio_file = None
     try:
         def download_audio():
@@ -377,7 +375,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         loop = asyncio.get_running_loop()
         audio_file = await loop.run_in_executor(None, download_audio)
-        
+
         if audio_file and os.path.exists(audio_file):
             with open(audio_file, 'rb') as audio:
                 await context.bot.send_audio(
@@ -417,27 +415,27 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     xp = user.get('xp', 0)
     level = xp // 100
     stats_text = f"📊 *GAMING STATS*\n\n🔹 *Level:* {level}\n✨ *Total XP:* {xp} XP\n🏆 *Total Quiz Score:* {user.get('total_score', 0)}\n"
-    await update.message.reply_text(stats_text, parse_mode="Markdown")
+    await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     delta = datetime(2027, 5, 2) - datetime.now()
-    await update.message.reply_text(f"⏳ *NEET UG 2027 Countdown:* *{delta.days} Days Remaining!* 🚀", parse_mode="Markdown")
+    await update.message.reply_text(f"⏳ *NEET UG 2027 Countdown:* *{delta.days} Days Remaining!* 🚀", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     user = update.effective_user.first_name
-    await update.message.reply_text(f"🍅 *Pomodoro Started by {user}!* Focus for 25 mins. 📚", parse_mode="Markdown")
+    await update.message.reply_text(f"🍅 *Pomodoro Started by {user}!* Focus for 25 mins. 📚", parse_mode=ParseMode.MARKDOWN)
     await asyncio.sleep(25 * 60)
-    await update.message.reply_text(f"⏰ *Time's Up {user}!* Take a 5-minute break. ☕", parse_mode="Markdown")
+    await update.message.reply_text(f"⏰ *Time's Up {user}!* Take a 5-minute break. ☕", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
-    await update.message.reply_text("💪 *Motivation:* सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो ज़रूर मिलती है!", parse_mode="Markdown")
+    await update.message.reply_text("💪 *Motivation:* सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो ज़रूर मिलती है!", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
-    await update.message.reply_text("🗓️ *PW Routine:* Chem (9 AM) | Botany (11:30 AM) | Zoology (2 PM) | Physics (4:30 PM)", parse_mode="Markdown")
+    await update.message.reply_text("🗓️ *PW Routine:* Chem (9 AM) | Botany (11:30 AM) | Zoology (2 PM) | Physics (4:30 PM)", parse_mode=ParseMode.MARKDOWN)
 
 async def cmd_diagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -457,8 +455,14 @@ def main():
     if not config.TELEGRAM_BOT_TOKEN:
         sys.exit(1)
 
-    database.init_db()
-    verify_gemini_key()
+    db.init_db()
+    db.init_pdf_db()
+
+    # Verify Gemini key but don't crash if it's missing or invalid
+    try:
+        verify_gemini_key()
+    except Exception as e:
+        logger.warning("Gemini key verification failed at startup: %s", e)
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
 
@@ -479,7 +483,7 @@ def main():
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("scheduleoff", cmd_scheduleoff))
     app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
-    
+
     # Prescription Handler
     app.add_handler(CommandHandler("prescription", cmd_prescription))
 
@@ -490,7 +494,7 @@ def main():
     app.add_handler(CommandHandler("confess", cmd_confess))
     app.add_handler(CommandHandler("song", cmd_song))
     app.add_handler(CommandHandler("mystats", cmd_mystats))
-    
+
     app.add_handler(CommandHandler("countdown", cmd_countdown))
     app.add_handler(CommandHandler("pomodoro", cmd_pomodoro))
     app.add_handler(CommandHandler("motivate", cmd_motivate))
@@ -500,7 +504,6 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     # PDF File Manager Handlers (Placed before normal message handler)
-    db.init_pdf_db()
     addfile_conv = ConversationHandler(
         entry_points=[CommandHandler('addfile', addfile_start)],
         states={
