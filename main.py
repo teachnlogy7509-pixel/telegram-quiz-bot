@@ -18,7 +18,7 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
-from quiz import verify_gemini_key
+from quiz import verify_gemini_key, generate_voice_response
 
 # Logging
 logging.basicConfig(
@@ -262,7 +262,21 @@ async def cmd_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
-    await update.message.reply_text("🎙 Voice processing is currently active only via API setup.")
+    if not update.message or not update.message.voice:
+        return
+
+    wait_msg = await update.message.reply_text("🎙 Voice सुन रहा हूँ…")
+    try:
+        voice = update.message.voice
+        tg_file = await context.bot.get_file(voice.file_id)
+        audio_bytes = bytes(await tg_file.download_as_bytearray())
+        reply = await generate_voice_response(audio_bytes)
+        await wait_msg.edit_text(f"🎙 आपने कहा:\n\n{reply}")
+    except Exception as exc:
+        logger.error("Voice processing failed: %s", exc)
+        await wait_msg.edit_text(
+            "❌ Voice process नहीं हो पाई। Gemini API/voice format की समस्या हो सकती है।"
+        )
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -520,7 +534,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
     app.add_handler(PollAnswerHandler(on_poll_answer))
 
-    logger.info("Bot polling with Environment API Key active …")
+    logger.info("Bot polling with Gemini API failover + voice processing active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":

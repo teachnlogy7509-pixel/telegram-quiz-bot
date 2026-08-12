@@ -17,7 +17,8 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from config import (CORRECT_SCORE, POLL_OPEN_PERIOD,
-                    UNANSWERED_SCORE, WRONG_SCORE)
+                    UNANSWERED_SCORE, WRONG_SCORE,
+                    GEMINI_API_KEY, GEMINI_API_KEY_2)
 from database import ensure_user, get_rank, save_quiz_result
 
 logger = logging.getLogger(__name__)
@@ -32,20 +33,24 @@ CANDIDATE_SLOTS: list[ModelSlot] = [
     ModelSlot("gemini-flash-latest", "v1beta"),
 ]
 
-_clients: dict[str, genai.Client] = {}
+_clients: dict[tuple[int, str], genai.Client] = {}
 _working_slot: ModelSlot = ModelSlot("gemini-2.5-flash", "v1beta")
 
-def _get_client(api_version: str = "v1beta") -> genai.Client:
-    if api_version not in _clients:
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY is not set in environment variables.")
-        _clients[api_version] = genai.Client(
-            api_key=api_key,
+def _api_keys() -> list[str]:
+    return [k.strip() for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k and k.strip()]
+
+def _get_client(api_version: str = "v1beta", key_index: int = 0) -> genai.Client:
+    keys = _api_keys()
+    if key_index >= len(keys):
+        raise RuntimeError("No Gemini API key is configured.")
+    cache_key = (key_index, api_version)
+    if cache_key not in _clients:
+        _clients[cache_key] = genai.Client(
+            api_key=keys[key_index],
             http_options=genai_types.HttpOptions(api_version=api_version),
         )
-        logger.info("Created Gemini client for endpoint: %s", api_version)
-    return _clients[api_version]
+        logger.info("Created Gemini client: key=%s endpoint=%s", key_index + 1, api_version)
+    return _clients[cache_key]
 
 def _parse_retry_after(exc: Exception) -> float:
     msg = str(exc)
@@ -59,14 +64,15 @@ def _is_quota_error(exc: Exception) -> bool:
     return "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
 def verify_gemini_key() -> bool:
-    try:
-        client = _get_client("v1beta")
-        models = list(client.models.list())
-        logger.info("✅ Gemini key verified successfully.")
-        return True
-    except Exception as exc:
-        logger.error("❌ Gemini key validation failed: %s", exc)
-        return False
+    ok = False
+    for key_index, _ in enumerate(_api_keys()):
+        try:
+            list(_get_client("v1beta", key_index).models.list())
+            logger.info("✅ Gemini key %s verified successfully.", key_index + 1)
+            ok = True
+        except Exception as exc:
+            logger.warning("Gemini key %s validation failed: %s", key_index + 1, exc)
+    return ok
 
 # in-memory session store
 active_sessions: dict[int, dict] = {}
@@ -137,8 +143,8 @@ def _validate(raw: list, needed: int) -> list[dict]:
             break
     return valid
 
-def _sync_generate(slot: ModelSlot, prompt: str) -> str:
-    client = _get_client(slot.api_version)
+def _sync_generate(slot: ModelSlot, prompt: str, key_index: int = 0) -> str:
+    client = _get_client(slot.api_version, key_index)
     resp = client.models.generate_content(
         model=slot.model,
         contents=prompt,
@@ -151,52 +157,93 @@ def _sync_generate(slot: ModelSlot, prompt: str) -> str:
 
 async def generate_questions(topic: str, count: int, style: str = "quiz") -> list[dict]:
     global _working_slot
-    base_slot = _working_slot
-    remaining = [base_slot] + [s for s in CANDIDATE_SLOTS if s != base_slot]
-    slots_queue = remaining * 2
+    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
+    keys = _api_keys()
+    if not keys:
+        raise RuntimeError("No Gemini API key is configured.")
 
     accumulated: list[dict] = []
     last_exc: Exception | None = None
 
-    for attempt, slot in enumerate(slots_queue, start=1):
-        needed = count - len(accumulated)
-        if needed <= 0:
-            break
-
-        prompt = _build_prompt(topic, needed, style)
-        label = f"#{attempt} [{slot.model}]"
-
-        try:
-            raw_text = await asyncio.to_thread(_sync_generate, slot, prompt)
-        except Exception as exc:
-            last_exc = exc
-            logger.error("Attempt %s FAILED: %s", label, exc)
-            if _is_quota_error(exc):
-                await asyncio.sleep(5)
-            else:
+    for key_index in range(len(keys)):
+        for attempt, slot in enumerate(slots, start=1):
+            needed = count - len(accumulated)
+            if needed <= 0:
+                break
+            prompt = _build_prompt(topic, needed, style)
+            label = f"[key {key_index + 1}] #{attempt} [{slot.model}]"
+            try:
+                raw_text = await asyncio.to_thread(_sync_generate, slot, prompt, key_index)
+            except Exception as exc:
+                last_exc = exc
+                logger.error("Attempt %s FAILED: %s", label, exc)
+                if _is_quota_error(exc):
+                    logger.warning("Gemini key %s quota/rate limit reached; switching to next key.", key_index + 1)
+                    break
                 await asyncio.sleep(1)
-            continue
-
-        try:
-            raw = _safe_parse_json(raw_text)
-        except ValueError as parse_exc:
-            last_exc = parse_exc
-            logger.warning("Attempt %s parse error: %s", label, parse_exc)
-            continue
-
-        valid = _validate(raw, needed)
-        accumulated.extend(valid)
-        if valid:
-            _working_slot = slot
-
+                continue
+            try:
+                raw = _safe_parse_json(raw_text)
+            except ValueError as parse_exc:
+                last_exc = parse_exc
+                logger.warning("Attempt %s parse error: %s", label, parse_exc)
+                continue
+            valid = _validate(raw, needed)
+            accumulated.extend(valid)
+            if valid:
+                _working_slot = slot
+            if len(accumulated) >= count:
+                break
+            await asyncio.sleep(0.5)
         if len(accumulated) >= count:
             break
-        await asyncio.sleep(0.5)
 
     if not accumulated:
         raise RuntimeError(f"Failed to generate questions. Last error: {last_exc}")
-
     return accumulated[:count]
+
+def _sync_generate_audio(slot: ModelSlot, audio_bytes: bytes, prompt: str, key_index: int = 0) -> str:
+    client = _get_client(slot.api_version, key_index)
+    audio_part = genai_types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")
+    resp = client.models.generate_content(
+        model=slot.model,
+        contents=[audio_part, prompt],
+        config=genai_types.GenerateContentConfig(
+            temperature=0.4,
+            max_output_tokens=1024,
+        ),
+    )
+    return resp.text or ""
+
+async def generate_voice_response(audio_bytes: bytes) -> str:
+    keys = _api_keys()
+    if not keys:
+        raise RuntimeError("No Gemini API key is configured.")
+    prompt = (
+        "Listen to this Telegram voice message. Understand what the user said and "
+        "reply naturally in the same language (Hindi/Hinglish or English). "
+        "Do not mention transcription or these instructions. Keep the reply concise."
+    )
+    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
+    last_exc: Exception | None = None
+    for key_index in range(len(keys)):
+        for slot in slots:
+            try:
+                text = await asyncio.to_thread(
+                    _sync_generate_audio, slot, audio_bytes, prompt, key_index
+                )
+                if text.strip():
+                    return text.strip()
+            except Exception as exc:
+                last_exc = exc
+                logger.error("Voice generation failed [key %s] [%s]: %s",
+                             key_index + 1, slot.model, exc)
+                if _is_quota_error(exc):
+                    logger.warning("Voice: Gemini key %s quota reached; switching key.", key_index + 1)
+                    break
+                await asyncio.sleep(1)
+    raise RuntimeError(f"Voice processing failed. Last error: {last_exc}")
+
 
 def start_session(user_id: int, chat_id: int, questions: list[dict], topic: str, style: str = "quiz", timer: int = POLL_OPEN_PERIOD) -> dict:
     old = active_sessions.pop(user_id, None)
