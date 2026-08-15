@@ -57,3 +57,6 @@ _Populate as you build._
 
 - `scores.db` is created relative to the working directory (`telegram-bot/`). The workflow `cd telegram-bot` ensures correct placement.
 - Questions must have exactly 4 options and a valid `correct_index` (0–3); any Gemini response that doesn't meet this is discarded and re-requested.
+
+
+Gemini configuration: set GEMINI_API_KEY and GEMINI_API_KEY_2. The bot automatically rotates across current Gemini text models when a model/key is unavailable. Gemini 3.7 is not an official API model name; Gemini 3.6 Flash is the current latest stable Flash model.

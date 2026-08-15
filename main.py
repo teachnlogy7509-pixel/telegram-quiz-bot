@@ -5,6 +5,8 @@ import re
 import sys
 import random
 import os
+import tempfile
+import shutil
 import yt_dlp
 from datetime import datetime, timedelta
 
@@ -18,7 +20,7 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
-from quiz import verify_gemini_key, generate_voice_response
+from quiz import verify_gemini_key, generate_voice_response, generate_questions_from_pdf
 
 # Logging
 logging.basicConfig(
@@ -92,6 +94,109 @@ async def addfile_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 फाइल अपलोड रद्द कर दिया गया है।")
     return ConversationHandler.END
 
+async def cmd_pdfquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate MCQs from a saved PDF: /pdfquiz <file name> <number>."""
+    if not await check_bot_active(update, context):
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text(
+            "📄 इस्तेमाल: /pdfquiz <PDF का नाम> <प्रश्नों की संख्या>\n"
+            "उदाहरण: /pdfquiz Biology Chapter 1 10"
+        )
+        return
+
+    try:
+        count = int(args[-1])
+    except ValueError:
+        await update.message.reply_text("❗ आखिरी में प्रश्नों की संख्या दें, जैसे: /pdfquiz Biology 10")
+        return
+
+    if not 1 <= count <= 50:
+        await update.message.reply_text("❗ प्रश्नों की संख्या 1 से 50 के बीच रखें।")
+        return
+
+    file_name = " ".join(args[:-1]).strip()
+    file_id = db.get_pdf(file_name)
+    if not file_id:
+        await update.message.reply_text(
+            f"❌ '{file_name}' नाम की PDF नहीं मिली। पहले /files से नाम देखें।"
+        )
+        return
+
+    wait_msg = await update.message.reply_text(
+        f"📄 *{file_name}* से {count} प्रश्न बनाए जा रहे हैं…\n"
+        "⏳ PDF को Gemini पढ़ रहा है।",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    temp_path = None
+    try:
+        tg_file = await context.bot.get_file(file_id)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = tmp.name
+        await tg_file.download_to_drive(temp_path)
+
+        with open(temp_path, "rb") as fh:
+            pdf_bytes = fh.read()
+
+        if len(pdf_bytes) > 20 * 1024 * 1024:
+            raise RuntimeError("PDF बहुत बड़ी है। कृपया 20 MB से छोटी PDF इस्तेमाल करें।")
+
+        questions = await generate_questions_from_pdf(pdf_bytes, file_name, count)
+
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
+        chat_id = update.effective_chat.id
+        user = update.effective_user
+        timer = db.get_group_timer(chat_id)
+
+        if chat_id < 0:
+            session = quiz_module.start_group_session(
+                chat_id, questions, f"PDF: {file_name}", timer
+            )
+            await update.message.reply_text(
+                f"📄 *PDF Quiz शुरू!*\n\n📚 {file_name}\n❓ Questions: {len(questions)}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await quiz_module.send_group_question(context.bot, session)
+            task = asyncio.create_task(
+                quiz_module._advance_group_after_timeout(context.bot, chat_id, 0)
+            )
+            session["advance_job"] = task
+        else:
+            db.ensure_user(user.id, chat_id, user.username, user.full_name)
+            session = quiz_module.start_session(
+                user.id, chat_id, questions, f"PDF: {file_name}", "quiz", timer
+            )
+            await update.message.reply_text(
+                f"📄 *PDF Quiz शुरू!*\n\n📚 {file_name}\n❓ Questions: {len(questions)}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await quiz_module.send_question(context.bot, session)
+            task = asyncio.create_task(
+                quiz_module._advance_after_timeout(context.bot, user.id, 0)
+            )
+            session["advance_job"] = task
+
+    except Exception as exc:
+        logger.exception("PDF quiz failed")
+        await wait_msg.edit_text(
+            "❌ PDF से questions नहीं बन पाए।\n\n"
+            f"कारण: {str(exc)[:300]}"
+        )
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
 async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     if not context.args:
@@ -126,6 +231,7 @@ HELP_TEXT = """
 📚 Quiz & Study Commands:
 /quiz <topic> <number> — Start a quiz
 /pyq <topic> <number> — PYQ-style quiz
+/pdfquiz <PDF name> <number> — PDF से questions
 /timer <15|30|45|60> — Set quiz timer
 
 🎯 NEET Special:
@@ -363,52 +469,75 @@ async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ मैसेज भेजने में दिक्कत आई।")
 
 async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    song_name = " ".join(context.args)
-    if not song_name:
-        await update.message.reply_text("❌ इस्तेमाल का तरीका: /song <गाने का नाम>")
+    if not await check_bot_active(update, context):
         return
-    msg = await update.message.reply_text("🎵 गाना ढूँढ कर डाउनलोड किया जा रहा है...")
 
+    song_name = " ".join(context.args or []).strip()
+    if not song_name:
+        await update.message.reply_text("❌ इस्तेमाल: /song <गाने का नाम>")
+        return
+
+    msg = await update.message.reply_text("🎵 गाना ढूँढा जा रहा है…")
+    temp_dir = tempfile.mkdtemp(prefix="telegram_song_")
+    audio_file = None
+
+    # Keep downloads safely below Telegram's bot upload limit and avoid
+    # collisions when two users request songs at the same time.
     ydl_opts = {
-        'format': 'worstaudio/worst', 
-        'outtmpl': 'downloaded_song.%(ext)s', 
-        'noplaylist': True, 
-        'quiet': True,
-        'socket_timeout': 15,
+        "format": "worstaudio[filesize<45M]/worstaudio",
+        "outtmpl": os.path.join(temp_dir, "song.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 20,
+        "retries": 2,
+        "fragment_retries": 2,
+        "concurrent_fragment_downloads": 1,
+        "restrictfilenames": True,
     }
 
-    audio_file = None
     try:
         def download_audio():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch:{song_name}", download=True)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                return ydl.prepare_filename(info)
+                info = ydl.extract_info(f"ytsearch1:{song_name}", download=True)
+                entries = info.get("entries") or []
+                if not entries:
+                    raise RuntimeError("गाना नहीं मिला।")
+                item = entries[0]
+                return ydl.prepare_filename(item)
 
         loop = asyncio.get_running_loop()
         audio_file = await loop.run_in_executor(None, download_audio)
 
-        if audio_file and os.path.exists(audio_file):
-            with open(audio_file, 'rb') as audio:
-                await context.bot.send_audio(
-                    chat_id=update.effective_chat.id, 
-                    audio=audio, 
-                    caption=f"🎧 {song_name}"
-                )
-            await msg.delete()
-        else:
-            await msg.edit_text("❌ गाना नहीं मिल पाया।")
-    except Exception as e:
-        logger.error(f"Song error: {e}")
-        await msg.edit_text("❌ गाना डाउनलोड करने में दिक्कत आई (Memory Limit Exceeded)।")
+        if not audio_file or not os.path.exists(audio_file):
+            raise RuntimeError("ऑडियो फ़ाइल डाउनलोड नहीं हुई।")
+
+        size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+        if size_mb > 49:
+            raise RuntimeError("ऑडियो Telegram की upload limit से बड़ा है।")
+
+        with open(audio_file, "rb") as audio:
+            await context.bot.send_audio(
+                chat_id=update.effective_chat.id,
+                audio=audio,
+                caption=f"🎧 {song_name}",
+                title=song_name[:64],
+            )
+        await msg.delete()
+
+    except Exception as exc:
+        logger.exception("Song error")
+        await msg.edit_text(
+            "❌ गाना भेजा नहीं जा सका।\n"
+            f"कारण: {str(exc)[:220]}"
+        )
     finally:
-        if audio_file and os.path.exists(audio_file):
-            try:
-                os.remove(audio_file)
-            except:
-                pass
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 
 async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -489,6 +618,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("pyq", cmd_pyq))
+    app.add_handler(CommandHandler("pdfquiz", cmd_pdfquiz))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("myrank", cmd_myrank))
     app.add_handler(CommandHandler("toptoday", cmd_toptoday))

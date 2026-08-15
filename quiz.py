@@ -27,14 +27,24 @@ class ModelSlot(NamedTuple):
     model: str
     api_version: str
 
+# Text / multimodal generation models currently suitable for generate_content.
+# Gemini 3.7 is not an official Gemini API model name at the moment;
+# Google's current latest stable Flash model is Gemini 3.6 Flash.
+# The bot tries these in order and automatically fails over across both API keys.
 CANDIDATE_SLOTS: list[ModelSlot] = [
+    ModelSlot("gemini-3.6-flash", "v1beta"),
+    ModelSlot("gemini-3.5-flash", "v1beta"),
+    ModelSlot("gemini-3.1-flash-lite", "v1beta"),
+    ModelSlot("gemini-3.1-pro-preview", "v1beta"),
+    ModelSlot("gemini-3-flash-preview", "v1beta"),
     ModelSlot("gemini-2.5-flash", "v1beta"),
-    ModelSlot("gemini-2.0-flash", "v1beta"),
+    ModelSlot("gemini-2.5-pro", "v1beta"),
+    ModelSlot("gemini-2.5-flash-lite", "v1beta"),
     ModelSlot("gemini-flash-latest", "v1beta"),
 ]
 
 _clients: dict[tuple[int, str], genai.Client] = {}
-_working_slot: ModelSlot = ModelSlot("gemini-2.5-flash", "v1beta")
+_working_slot: ModelSlot = CANDIDATE_SLOTS[0]
 
 def _api_keys() -> list[str]:
     return [k.strip() for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k and k.strip()]
@@ -149,58 +159,164 @@ def _sync_generate(slot: ModelSlot, prompt: str, key_index: int = 0) -> str:
         model=slot.model,
         contents=prompt,
         config=genai_types.GenerateContentConfig(
-            temperature=0.7,
             max_output_tokens=8192,
+            response_mime_type="application/json",
         ),
     )
     return resp.text or ""
 
 async def generate_questions(topic: str, count: int, style: str = "quiz") -> list[dict]:
+    """Generate MCQs with two-key failover and retries for 429/503/temporary errors."""
     global _working_slot
+    keys = _api_keys()
+    if not keys:
+        raise RuntimeError("No Gemini API key is configured. Set GEMINI_API_KEY and/or GEMINI_API_KEY_2.")
+
     slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
+    accumulated: list[dict] = []
+    errors: list[str] = []
+
+    # Small batches are much more reliable than asking one request for 50+ questions.
+    remaining = count
+    while remaining > 0 and len(errors) < 30:
+        needed = min(remaining, 10)
+        prompt = _build_prompt(topic, needed, style)
+        batch_ok = False
+
+        for key_index in range(len(keys)):
+            for slot in slots:
+                for retry in range(2):
+                    label = f"[key {key_index + 1}] [{slot.model}] retry={retry + 1}"
+                    try:
+                        raw_text = await asyncio.to_thread(
+                            _sync_generate, slot, prompt, key_index
+                        )
+                        raw = _safe_parse_json(raw_text)
+                        valid = _validate(raw, needed)
+                        if len(valid) < needed:
+                            raise ValueError(
+                                f"Gemini returned {len(valid)}/{needed} valid questions"
+                            )
+                        accumulated.extend(valid)
+                        _working_slot = slot
+                        remaining = count - len(accumulated)
+                        batch_ok = True
+                        logger.info("Question batch succeeded: %s", label)
+                        break
+                    except Exception as exc:
+                        msg = str(exc)
+                        errors.append(f"{label}: {msg[:180]}")
+                        logger.error("Question generation failed %s: %s", label, msg)
+
+                        # 503/UNAVAILABLE and 429 are temporary; wait briefly, then
+                        # rotate to the next key/model instead of immediately failing.
+                        if "503" in msg or "UNAVAILABLE" in msg or "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                            await asyncio.sleep(min(3 + retry * 3, 8))
+                        else:
+                            await asyncio.sleep(0.5)
+                if batch_ok:
+                    break
+            if batch_ok:
+                break
+
+        if not batch_ok:
+            break
+
+    if len(accumulated) < count:
+        last = errors[-1] if errors else "unknown Gemini error"
+        raise RuntimeError(
+            f"Gemini could not generate enough questions ({len(accumulated)}/{count}). "
+            f"Last error: {last}"
+        )
+    return accumulated[:count]
+
+
+def _sync_generate_pdf_questions(
+    slot: ModelSlot, pdf_bytes: bytes, pdf_name: str, count: int, key_index: int = 0
+) -> str:
+    client = _get_client(slot.api_version, key_index)
+    pdf_part = genai_types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+    prompt = _build_prompt(
+        f'the attached PDF "{pdf_name}". Use ONLY information found in the PDF; '
+        "do not invent facts. If the PDF is not readable, say so.",
+        count,
+        "quiz",
+    )
+    resp = client.models.generate_content(
+        model=slot.model,
+        contents=[pdf_part, prompt],
+        config=genai_types.GenerateContentConfig(
+            max_output_tokens=8192,
+            response_mime_type="application/json",
+        ),
+    )
+    return resp.text or ""
+
+
+async def generate_questions_from_pdf(
+    pdf_bytes: bytes, pdf_name: str, count: int
+) -> list[dict]:
+    """Create MCQs strictly from an uploaded PDF, using both Gemini keys."""
+    global _working_slot
     keys = _api_keys()
     if not keys:
         raise RuntimeError("No Gemini API key is configured.")
 
-    accumulated: list[dict] = []
-    last_exc: Exception | None = None
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise RuntimeError("The selected file is not a valid PDF.")
 
-    for key_index in range(len(keys)):
-        for attempt, slot in enumerate(slots, start=1):
-            needed = count - len(accumulated)
-            if needed <= 0:
-                break
-            prompt = _build_prompt(topic, needed, style)
-            label = f"[key {key_index + 1}] #{attempt} [{slot.model}]"
-            try:
-                raw_text = await asyncio.to_thread(_sync_generate, slot, prompt, key_index)
-            except Exception as exc:
-                last_exc = exc
-                logger.error("Attempt %s FAILED: %s", label, exc)
-                if _is_quota_error(exc):
-                    logger.warning("Gemini key %s quota/rate limit reached; switching to next key.", key_index + 1)
+    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
+    accumulated: list[dict] = []
+    remaining = count
+    last_exc = None
+
+    while remaining > 0 and len(accumulated) < count:
+        needed = min(remaining, 10)
+        success = False
+        for key_index in range(len(keys)):
+            for slot in slots:
+                for retry in range(2):
+                    try:
+                        raw_text = await asyncio.to_thread(
+                            _sync_generate_pdf_questions,
+                            slot, pdf_bytes, pdf_name, needed, key_index
+                        )
+                        raw = _safe_parse_json(raw_text)
+                        valid = _validate(raw, needed)
+                        if len(valid) < needed:
+                            raise ValueError(
+                                f"PDF response contained {len(valid)}/{needed} valid questions"
+                            )
+                        accumulated.extend(valid)
+                        _working_slot = slot
+                        remaining = count - len(accumulated)
+                        success = True
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        logger.error(
+                            "PDF question generation failed [key %s] [%s] retry=%s: %s",
+                            key_index + 1, slot.model, retry + 1, exc
+                        )
+                        msg = str(exc)
+                        if any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                            await asyncio.sleep(3 + retry * 3)
+                        else:
+                            await asyncio.sleep(0.5)
+                if success:
                     break
-                await asyncio.sleep(1)
-                continue
-            try:
-                raw = _safe_parse_json(raw_text)
-            except ValueError as parse_exc:
-                last_exc = parse_exc
-                logger.warning("Attempt %s parse error: %s", label, parse_exc)
-                continue
-            valid = _validate(raw, needed)
-            accumulated.extend(valid)
-            if valid:
-                _working_slot = slot
-            if len(accumulated) >= count:
+            if success:
                 break
-            await asyncio.sleep(0.5)
-        if len(accumulated) >= count:
+        if not success:
             break
 
-    if not accumulated:
-        raise RuntimeError(f"Failed to generate questions. Last error: {last_exc}")
+    if len(accumulated) < count:
+        raise RuntimeError(
+            f"Could not generate enough PDF questions ({len(accumulated)}/{count}). "
+            f"Last error: {last_exc}"
+        )
     return accumulated[:count]
+
 
 def _sync_generate_audio(slot: ModelSlot, audio_bytes: bytes, prompt: str, key_index: int = 0) -> str:
     client = _get_client(slot.api_version, key_index)
@@ -209,7 +325,6 @@ def _sync_generate_audio(slot: ModelSlot, audio_bytes: bytes, prompt: str, key_i
         model=slot.model,
         contents=[audio_part, prompt],
         config=genai_types.GenerateContentConfig(
-            temperature=0.4,
             max_output_tokens=1024,
         ),
     )
