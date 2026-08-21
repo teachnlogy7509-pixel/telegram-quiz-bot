@@ -12,13 +12,15 @@ from typing import NamedTuple
 
 from google import genai
 from google.genai import types as genai_types
+from groq import Groq
 from telegram import Bot, ChatPermissions
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from config import (CORRECT_SCORE, POLL_OPEN_PERIOD,
                     UNANSWERED_SCORE, WRONG_SCORE,
-                    GEMINI_API_KEY, GEMINI_API_KEY_2)
+                    GEMINI_API_KEY, GEMINI_API_KEY_2,
+                    GROQ_API_KEY, GROQ_API_KEY_2, GROQ_MODEL)
 from database import ensure_user, get_rank, save_quiz_result
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,44 @@ CANDIDATE_SLOTS: list[ModelSlot] = [
 
 _clients: dict[tuple[int, str], genai.Client] = {}
 _working_slot: ModelSlot = CANDIDATE_SLOTS[0]
+_groq_clients: dict[int, Groq] = {}
+
+def _groq_keys() -> list[str]:
+    return [k.strip() for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k and k.strip()]
+
+def _get_groq_client(key_index: int = 0) -> Groq:
+    keys = _groq_keys()
+    if key_index >= len(keys):
+        raise RuntimeError("No Groq API key is configured.")
+    if key_index not in _groq_clients:
+        _groq_clients[key_index] = Groq(api_key=keys[key_index])
+    return _groq_clients[key_index]
+
+def _groq_generate(prompt: str, key_index: int = 0) -> str:
+    client = _get_groq_client(key_index)
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": "You are a reliable quiz-question generator. Return only the requested JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_completion_tokens=8192,
+    )
+    return response.choices[0].message.content or ""
+
+def verify_groq_keys() -> bool:
+    ok = False
+    for key_index, _ in enumerate(_groq_keys()):
+        try:
+            text = _groq_generate("Reply with exactly: OK", key_index)
+            if text.strip():
+                logger.info("Groq key %s verified successfully.", key_index + 1)
+                ok = True
+        except Exception as exc:
+            logger.warning("Groq key %s validation failed: %s", key_index + 1, exc)
+    return ok
+
 
 def _api_keys() -> list[str]:
     return [k.strip() for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k and k.strip()]
@@ -222,10 +262,35 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
         if not batch_ok:
             break
 
+    # Final provider failover: Groq (up to two API keys).
+    # This keeps Gemini as the primary provider and only uses Groq when Gemini
+    # cannot finish the requested batch.
+    groq_keys = _groq_keys()
+    while len(accumulated) < count and groq_keys:
+        needed = min(count - len(accumulated), 10)
+        prompt = _build_prompt(topic, needed, style)
+        groq_ok = False
+        for key_index in range(len(groq_keys)):
+            try:
+                raw_text = await asyncio.to_thread(_groq_generate, prompt, key_index)
+                raw = _safe_parse_json(raw_text)
+                valid = _validate(raw, needed)
+                if len(valid) < needed:
+                    raise ValueError(f"Groq returned {len(valid)}/{needed} valid questions")
+                accumulated.extend(valid)
+                groq_ok = True
+                logger.info("Groq question batch succeeded with key %s.", key_index + 1)
+                break
+            except Exception as exc:
+                errors.append(f"[groq key {key_index + 1}]: {str(exc)[:180]}")
+                logger.error("Groq question generation failed [key %s]: %s", key_index + 1, exc)
+        if not groq_ok:
+            break
+
     if len(accumulated) < count:
-        last = errors[-1] if errors else "unknown Gemini error"
+        last = errors[-1] if errors else "unknown AI error"
         raise RuntimeError(
-            f"Gemini could not generate enough questions ({len(accumulated)}/{count}). "
+            f"AI could not generate enough questions ({len(accumulated)}/{count}). "
             f"Last error: {last}"
         )
     return accumulated[:count]

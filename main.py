@@ -20,7 +20,7 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
-from quiz import verify_gemini_key, generate_voice_response, generate_questions_from_pdf
+from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
 
 # Logging
 logging.basicConfig(
@@ -469,7 +469,11 @@ async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ मैसेज भेजने में दिक्कत आई।")
 
 async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search YouTube and send a small audio file in private chats or groups."""
     if not await check_bot_active(update, context):
+        return
+
+    if not update.message:
         return
 
     song_name = " ".join(context.args or []).strip()
@@ -477,23 +481,30 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ इस्तेमाल: /song <गाने का नाम>")
         return
 
+    chat_id = update.effective_chat.id
     msg = await update.message.reply_text("🎵 गाना ढूँढा जा रहा है…")
     temp_dir = tempfile.mkdtemp(prefix="telegram_song_")
-    audio_file = None
 
-    # Keep downloads safely below Telegram's bot upload limit and avoid
-    # collisions when two users request songs at the same time.
+    # Convert to MP3 with ffmpeg so Telegram receives a predictable file.
+    # 96 kbps keeps most normal songs comfortably below the Bot API upload limit.
     ydl_opts = {
-        "format": "worstaudio[filesize<45M]/worstaudio",
-        "outtmpl": os.path.join(temp_dir, "song.%(ext)s"),
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 20,
-        "retries": 2,
-        "fragment_retries": 2,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
         "concurrent_fragment_downloads": 1,
         "restrictfilenames": True,
+        "default_search": "ytsearch1",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "96",
+        }],
+        "postprocessor_args": ["-vn"],
     }
 
     try:
@@ -504,24 +515,43 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not entries:
                     raise RuntimeError("गाना नहीं मिला।")
                 item = entries[0]
-                return ydl.prepare_filename(item)
+                video_id = item.get("id")
+                if not video_id:
+                    raise RuntimeError("YouTube result का ID नहीं मिला।")
+                # FFmpegExtractAudio changes the extension to .mp3.
+                audio_path = os.path.join(temp_dir, f"{video_id}.mp3")
+                if not os.path.exists(audio_path):
+                    # Some extractors return a different filename; find the converted MP3.
+                    mp3s = [
+                        os.path.join(temp_dir, name)
+                        for name in os.listdir(temp_dir)
+                        if name.lower().endswith(".mp3")
+                    ]
+                    if not mp3s:
+                        raise RuntimeError("ऑडियो कन्वर्ट नहीं हो पाया। Railway में ffmpeg उपलब्ध नहीं है।")
+                    audio_path = mp3s[0]
+                return audio_path, item
 
         loop = asyncio.get_running_loop()
-        audio_file = await loop.run_in_executor(None, download_audio)
+        audio_file, info = await loop.run_in_executor(None, download_audio)
 
         if not audio_file or not os.path.exists(audio_file):
             raise RuntimeError("ऑडियो फ़ाइल डाउनलोड नहीं हुई।")
 
         size_mb = os.path.getsize(audio_file) / (1024 * 1024)
         if size_mb > 49:
-            raise RuntimeError("ऑडियो Telegram की upload limit से बड़ा है।")
+            raise RuntimeError("ऑडियो 49 MB से बड़ा है; छोटा/दूसरा version आज़माएँ।")
+
+        title = (info.get("title") or song_name).strip()[:64]
+        artist = (info.get("artist") or info.get("uploader") or "").strip()[:64]
 
         with open(audio_file, "rb") as audio:
             await context.bot.send_audio(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 audio=audio,
-                caption=f"🎧 {song_name}",
-                title=song_name[:64],
+                caption=f"🎧 {title}",
+                title=title,
+                performer=artist or None,
             )
         await msg.delete()
 
@@ -532,10 +562,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"कारण: {str(exc)[:220]}"
         )
     finally:
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 
@@ -607,6 +634,11 @@ def main():
     except Exception as e:
         logger.warning("Gemini key verification failed at startup: %s", e)
 
+    try:
+        verify_groq_keys()
+    except Exception as e:
+        logger.warning("Groq key verification failed at startup: %s", e)
+
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
 
     # Admin Control Handlers
@@ -664,7 +696,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
     app.add_handler(PollAnswerHandler(on_poll_answer))
 
-    logger.info("Bot polling with Gemini API failover + voice processing active …")
+    logger.info("Bot polling with Gemini + Groq failover + voice processing active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ A Telegram bot that generates AI-powered quiz questions using Google Gemini, tra
 
 - Bot runs automatically via the **"Telegram Quiz Bot"** workflow
 - `cd telegram-bot && python main.py` — run manually
-- Required secrets: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`
+- Required secrets: `TELEGRAM_BOT_TOKEN`. AI keys: `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GROQ_API_KEY`, `GROQ_API_KEY_2` (Groq is optional failover).
 
 ## Stack
 
@@ -60,3 +60,8 @@ _Populate as you build._
 
 
 Gemini configuration: set GEMINI_API_KEY and GEMINI_API_KEY_2. The bot automatically rotates across current Gemini text models when a model/key is unavailable. Gemini 3.7 is not an official API model name; Gemini 3.6 Flash is the current latest stable Flash model.
+
+
+## Railway variables
+
+Add `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GROQ_API_KEY`, and `GROQ_API_KEY_2` as separate Railway Variables. Never put API keys directly in source code.

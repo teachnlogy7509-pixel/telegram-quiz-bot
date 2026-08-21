@@ -2,4 +2,5 @@ python-telegram-bot==21.10
 google-genai>=2.14.0
 apscheduler==3.10.4
 pytz
-yt-dlp
+yt-dlp>=2025.1.0
+groq>=0.31.0
