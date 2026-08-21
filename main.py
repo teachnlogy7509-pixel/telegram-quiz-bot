@@ -8,6 +8,7 @@ import os
 import tempfile
 import shutil
 import yt_dlp
+import shutil
 from datetime import datetime, timedelta
 
 from telegram import Update
@@ -485,6 +486,18 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🎵 गाना ढूँढा जा रहा है…")
     temp_dir = tempfile.mkdtemp(prefix="telegram_song_")
 
+    # Railway must provide ffmpeg/ffprobe because yt-dlp uses them for MP3 conversion.
+    # nixpacks.toml installs ffmpeg during Railway build.
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    if not ffmpeg_path or not ffprobe_path:
+        await msg.edit_text(
+            "❌ Song system setup error: Railway में ffmpeg/ffprobe नहीं मिला।\n\n"
+            "Deploy को नया build देकर फिर कोशिश करें।"
+        )
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return
+
     # Convert to MP3 with ffmpeg so Telegram receives a predictable file.
     # 96 kbps keeps most normal songs comfortably below the Bot API upload limit.
     ydl_opts = {
@@ -505,6 +518,7 @@ async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "preferredquality": "96",
         }],
         "postprocessor_args": ["-vn"],
+        "ffmpeg_location": ffmpeg_path,
     }
 
     try:
