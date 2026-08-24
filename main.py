@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                         MessageHandler, PollAnswerHandler, filters, ConversationHandler)
+                         MessageHandler, PollAnswerHandler, TypeHandler, filters, ConversationHandler)
 
 import config
 import database as db
