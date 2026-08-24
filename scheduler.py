@@ -20,8 +20,9 @@ def init_scheduler(app):
     """Call once from Application.post_init; loads saved schedules and starts the clock."""
     global _app
     _app = app
-    _load_schedules()
-    _scheduler.start()
+    if not _scheduler.running:
+        _load_schedules()
+        _scheduler.start()
     logger.info("Scheduler started.")
 
 

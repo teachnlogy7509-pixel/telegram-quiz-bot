@@ -7,7 +7,6 @@ GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")
 # Optional Groq failover: add one or both keys in Railway Variables.
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 DB_PATH = "scores.db"
