@@ -13,13 +13,13 @@ from typing import NamedTuple
 from google import genai
 from google.genai import types as genai_types
 from groq import Groq
-from telegram import Bot, ChatPermissions
+from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from config import (CORRECT_SCORE, POLL_OPEN_PERIOD,
                     UNANSWERED_SCORE, WRONG_SCORE,
-                    GEMINI_API_KEY, GEMINI_API_KEY_2,
+                    GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_MODEL,
                     GROQ_API_KEY, GROQ_API_KEY_2, GROQ_MODEL)
 from database import ensure_user, get_rank, save_quiz_result
 
@@ -29,20 +29,17 @@ class ModelSlot(NamedTuple):
     model: str
     api_version: str
 
-# Text / multimodal generation models currently suitable for generate_content.
-# Gemini 3.7 is not an official Gemini API model name at the moment;
-# Google's current latest stable Flash model is Gemini 3.6 Flash.
-# The bot tries these in order and automatically fails over across both API keys.
+# Current Gemini API model IDs with automatic fallback across models and API keys.
 CANDIDATE_SLOTS: list[ModelSlot] = [
+    ModelSlot(GEMINI_MODEL, "v1beta"),
+    ModelSlot("gemini-3.7-flash", "v1beta"),
     ModelSlot("gemini-3.6-flash", "v1beta"),
     ModelSlot("gemini-3.5-flash", "v1beta"),
+    ModelSlot("gemini-3.5-flash-lite", "v1beta"),
     ModelSlot("gemini-3.1-flash-lite", "v1beta"),
-    ModelSlot("gemini-3.1-pro-preview", "v1beta"),
-    ModelSlot("gemini-3-flash-preview", "v1beta"),
     ModelSlot("gemini-2.5-flash", "v1beta"),
     ModelSlot("gemini-2.5-pro", "v1beta"),
     ModelSlot("gemini-2.5-flash-lite", "v1beta"),
-    ModelSlot("gemini-flash-latest", "v1beta"),
 ]
 
 _clients: dict[tuple[int, str], genai.Client] = {}
@@ -427,6 +424,8 @@ async def generate_voice_response(audio_bytes: bytes) -> str:
 
 def start_session(user_id: int, chat_id: int, questions: list[dict], topic: str, style: str = "quiz", timer: int = POLL_OPEN_PERIOD) -> dict:
     old = active_sessions.pop(user_id, None)
+    if old and old.get("advance_job") and not old["advance_job"].done():
+        old["advance_job"].cancel()
     if old and old.get("current_poll_id"):
         poll_to_user.pop(old["current_poll_id"], None)
 
@@ -560,6 +559,8 @@ async def finish_quiz(bot: Bot, session: dict):
 
 def start_group_session(chat_id: int, questions: list[dict], topic: str, timer: int) -> dict:
     old = group_sessions.pop(chat_id, None)
+    if old and old.get("advance_job") and not old["advance_job"].done():
+        old["advance_job"].cancel()
     if old and old.get("current_poll_id"):
         poll_to_chat.pop(old["current_poll_id"], None)
 
@@ -585,7 +586,7 @@ async def send_group_question(bot: Bot, session: dict):
     total = session["total"]
     chat_id = session["chat_id"]
 
-    q_text = f"📅 Daily Quiz — ❓ Q{idx + 1}/{total}\n\n{q['question']}"
+    q_text = f"📚 {session['topic']} — ❓ Q{idx + 1}/{total}\n\n{q['question']}"
     if len(q_text) > 300:
         q_text = q_text[:297] + "…"
     options = [str(o)[:100] for o in q["options"]]
@@ -679,15 +680,4 @@ async def finish_group_quiz(bot: Bot, session: dict):
     except TelegramError as exc:
         logger.error("Group result card failed: %s", exc)
 
-    # क्विज़ खत्म होने के बाद ग्रुप की चैट रोक दें (Restrict chat permissions)
-    try:
-        await bot.set_chat_permissions(
-            chat_id=chat_id,
-            permissions=ChatPermissions(can_send_messages=False)
-        )
-        await bot.send_message(
-            chat_id=chat_id,
-            text="🔒 क्विज़ समाप्त हो गया है! एडमिन द्वारा चैट दोबारा खोले जाने तक मेंबर्स मैसेज नहीं भेज सकते।"
-        )
-    except TelegramError as exc:
-        logger.error(f"Failed to restrict group chat permissions: {exc}")
+    logger.info("Group quiz finished: chat=%s", chat_id)

@@ -33,14 +33,14 @@ def _load_schedules():
 
 def add_schedule(chat_id: int, topic: str, count: int):
     """Persist to DB and register the cron job (idempotent)."""
-    from database import set_schedule
-    set_schedule(chat_id, topic, count)
+    from database import save_schedule
+    save_schedule(chat_id, topic, count)
     _add_job(chat_id, topic, count)
 
 
 def remove_schedule(chat_id: int):
     """Remove DB record and cancel the cron job."""
-    from database import remove_schedule as db_remove
+    from database import remove_schedule_db as db_remove
     db_remove(chat_id)
     try:
         _scheduler.remove_job(f"daily_{chat_id}")

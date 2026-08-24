@@ -8,7 +8,7 @@ import os
 import tempfile
 import shutil
 import yt_dlp
-import shutil
+from urllib.parse import quote_plus
 from datetime import datetime, timedelta
 
 from telegram import Update
@@ -223,38 +223,43 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 HELP_TEXT = """
-🤖 Telegram NEET SuperBot
+🤖 Telegram Quiz Bot
 
 ⚙️ Admin Controls:
-/on — Turn Bot ON
-/off — Turn Bot OFF
+/on — Bot ON
+/off — Bot OFF
 
-📚 Quiz & Study Commands:
-/quiz <topic> <number> — Start a quiz
+📚 Quiz & Study:
+/quiz <topic> <number> — Quiz शुरू करें
 /pyq <topic> <number> — PYQ-style quiz
-/pdfquiz <PDF name> <number> — PDF से questions
-/timer <15|30|45|60> — Set quiz timer
+/pdfquiz <PDF name> <number> — PDF से quiz
+/timer <15|30|45|60> — Quiz timer
 
-🎯 NEET Special:
-/countdown — Mega Exam Countdown
-/pomodoro — 25 Min Focus Study Timer
-/prescription — Dr. Bot's Fun Prescription
-/motivate — Instant Motivation Dose
-/routine — PW Dropper Live Batch Tracker
-/diagram — NCERT Biology Diagram Quiz
-
-📊 Stats & Leaderboard:
+📊 Stats:
 /leaderboard — Top 10 players
-/myrank — Your stats & rank
-/toptoday — Today's top scores
-/mystats — Check your Chat XP Level
+/myrank — अपनी rank और stats
+/toptoday — आज के top scores
+/mystats — XP और quiz stats
+/resetscore — अपना score reset
 
-🌟 Fun Features:
-/song <name> — Download & play a song
-/confess <msg> — Send anonymous confession (DM only)
-/shayari — Random Romantic Shayari
-/gm — Good Morning Message
-/lovememe — Random Love Meme
+📅 Daily Quiz:
+/schedule <topic> <number> — रोज 9 PM quiz
+/scheduleoff — Daily schedule बंद करें
+/schedulelist — Current schedule देखें
+
+📁 PDF Library:
+/addfile — PDF/Document save करें
+/files — Saved files देखें
+/file <नाम> — File भेजें
+
+🎵 Song:
+/song <गाने का नाम> — Song search link
+/song — Reply किए गए Telegram audio को दोबारा भेजें
+
+🌟 Fun:
+/shayari
+/gm
+/confess <message> — DM से confession
 """.strip()
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -389,19 +394,42 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     chat_id = update.effective_chat.id
     args = context.args or []
-    if len(args) < 2: return
-    topic = " ".join(args[:-1])
-    sched_module.add_schedule(chat_id, topic, int(args[-1]))
-    await update.message.reply_text("✅ Daily Quiz Scheduled!", parse_mode=ParseMode.MARKDOWN)
+    if len(args) < 2:
+        await update.message.reply_text("इस्तेमाल: `/schedule <topic> <number>`", parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        count = int(args[-1])
+    except ValueError:
+        await update.message.reply_text("❌ आखिरी argument questions की संख्या होनी चाहिए।")
+        return
+    if not 1 <= count <= 50:
+        await update.message.reply_text("❌ Questions 1 से 50 के बीच रखें।")
+        return
+    topic = " ".join(args[:-1]).strip()
+    if not topic:
+        await update.message.reply_text("❌ Topic भी देना जरूरी है।")
+        return
+    sched_module.add_schedule(chat_id, topic, count)
+    await update.message.reply_text(
+        f"✅ Daily Quiz scheduled!\n📖 Topic: {topic}\n❓ Questions: {count}\n🕘 Time: 9:00 PM IST"
+    )
 
 async def cmd_scheduleoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     sched_module.remove_schedule(update.effective_chat.id)
-    await update.message.reply_text("✅ Schedule turned off.", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("✅ Daily schedule बंद कर दिया गया है।")
 
 async def cmd_schedulelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
-    await update.message.reply_text("📋 Check active schedules.", parse_mode=ParseMode.MARKDOWN)
+    rows = db.get_all_schedules()
+    chat_id = update.effective_chat.id
+    row = next((r for r in rows if int(r["chat_id"]) == int(chat_id)), None)
+    if not row:
+        await update.message.reply_text("📋 इस chat में कोई daily quiz scheduled नहीं है।")
+        return
+    await update.message.reply_text(
+        f"📋 Daily Quiz\n📖 Topic: {row['topic']}\n❓ Questions: {row['count']}\n🕘 9:00 PM IST"
+    )
 
 async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer
@@ -415,59 +443,6 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = answer.user.full_name or "User"
         username = answer.user.username or ""
         await quiz_module.handle_group_poll_answer(context.bot, chat_id, answer.user.id, name, username, answer.poll_id, selected)
-
-async def cmd_prescription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    user = update.effective_user.first_name
-    rx_text = f"""
-📋 *DR. BOT'S DIGITAL PRESCRIPTION SLIP* 🩺
---------------------------------------------------
-👤 **Patient Name:** {user}  
-📅 **Date:** Today (Emergency NEET Ward)  
---------------------------------------------------
-Rx:
-1. **Sleep-Tab 8Hours** — रात को बिना फोन चलाए पूरी नींद लें (दिन में 1 बार)।
-2. **Physics-Num-Syrup** — रोज सुबह उठकर कम से कम 20 न्यूमेरिकल की खुराक लें।
-3. **NCERT-Drops** — हर खाने के बाद बायोलॉजी की लाइन-बाय-लाइन आँखें बंद करके रिवीजन करे।
-4. **Motivation-Injections** — जब भी डिप्रेशन हो, आईने में देखकर बोलें 'I can do it!' 💉
-
-⚠️ **Warning:** डॉक्टर (बोट) की सलाह के बिना रील्स चलाना सख्त मना है!  
---------------------------------------------------
-*Get Well Soon & Crack NEET 2027!* 🚀
-""".strip()
-    await update.message.reply_text(rx_text, parse_mode=ParseMode.MARKDOWN)
-
-# Fun & Special Commands
-async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_text("चाँदनी चाँद से होती है, सितारों से नहीं... ❤️")
-
-async def cmd_gm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_text("Good Morning! ☀️ उठो और आज के दिन को शानदार बनाओ!")
-
-async def cmd_lovememe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_photo(photo="https://i.pinimg.com/736x/2b/9a/99/2b9a99ea7035ce4a25501314ecf1489e.jpg", caption="For you! ❤️")
-
-async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    if update.effective_chat.type != 'private':
-        await update.message.reply_text("🤫 यह कमांड सिर्फ मेरे DM में काम करता है!")
-        return
-    confession_text = " ".join(context.args)
-    if not confession_text:
-        await update.message.reply_text("❌ इस्तेमाल का तरीका: /confess <मैसेज>")
-        return
-    group_id = db.get_latest_group_for_user(update.effective_user.id)
-    if not group_id:
-        await update.message.reply_text("❌ पहले मेन ग्रुप में एक मैसेज भेजें!")
-        return
-    try:
-        await context.bot.send_message(chat_id=group_id, text=f"🤫 *New Confession:*\n\n{confession_text}", parse_mode=ParseMode.MARKDOWN)
-        await update.message.reply_text("✅ मैसेज भेज दिया गया है!")
-    except Exception:
-        await update.message.reply_text("❌ मैसेज भेजने में दिक्कत आई।")
 
 async def cmd_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Search YouTube and send a small audio file in private chats or groups."""
@@ -601,37 +576,6 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_text = f"📊 *GAMING STATS*\n\n🔹 *Level:* {level}\n✨ *Total XP:* {xp} XP\n🏆 *Total Quiz Score:* {user.get('total_score', 0)}\n"
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
-async def cmd_countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    delta = datetime(2027, 5, 2) - datetime.now()
-    await update.message.reply_text(f"⏳ *NEET UG 2027 Countdown:* *{delta.days} Days Remaining!* 🚀", parse_mode=ParseMode.MARKDOWN)
-
-async def cmd_pomodoro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    user = update.effective_user.first_name
-    await update.message.reply_text(f"🍅 *Pomodoro Started by {user}!* Focus for 25 mins. 📚", parse_mode=ParseMode.MARKDOWN)
-    await asyncio.sleep(25 * 60)
-    await update.message.reply_text(f"⏰ *Time's Up {user}!* Take a 5-minute break. ☕", parse_mode=ParseMode.MARKDOWN)
-
-async def cmd_motivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_text("💪 *Motivation:* सफलता एक दिन में नहीं मिलती, लेकिन ठान लो तो ज़रूर मिलती है!", parse_mode=ParseMode.MARKDOWN)
-
-async def cmd_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_text("🗓️ *PW Routine:* Chem (9 AM) | Botany (11:30 AM) | Zoology (2 PM) | Physics (4:30 PM)", parse_mode=ParseMode.MARKDOWN)
-
-async def cmd_diagram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    diag = {
-        "img_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Diagram_of_the_human_heart_%28cropped%29.svg/800px-Diagram_of_the_human_heart_%28cropped%29.svg.png",
-        "question": "🧬 Identify the chamber that pumps oxygenated blood:",
-        "options": ["Right Atrium", "Left Ventricle", "Right Ventricle", "Left Atrium"],
-        "correct_option_id": 1
-    }
-    await context.bot.send_photo(chat_id=update.effective_chat.id, photo=diag["img_url"], caption="🔍 *NCERT Diagram Check!*")
-    await context.bot.send_poll(chat_id=update.effective_chat.id, question=diag["question"], options=diag["options"], type='quiz', correct_option_id=diag["correct_option_id"], is_anonymous=False)
-
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
 
@@ -674,22 +618,14 @@ def main():
     app.add_handler(CommandHandler("scheduleoff", cmd_scheduleoff))
     app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
 
-    # Prescription Handler
-    app.add_handler(CommandHandler("prescription", cmd_prescription))
 
-    # Fun & Special Handlers
+    # Fun handlers
     app.add_handler(CommandHandler("shayari", cmd_shayari))
     app.add_handler(CommandHandler("gm", cmd_gm))
     app.add_handler(CommandHandler("lovememe", cmd_lovememe))
     app.add_handler(CommandHandler("confess", cmd_confess))
     app.add_handler(CommandHandler("song", cmd_song))
     app.add_handler(CommandHandler("mystats", cmd_mystats))
-
-    app.add_handler(CommandHandler("countdown", cmd_countdown))
-    app.add_handler(CommandHandler("pomodoro", cmd_pomodoro))
-    app.add_handler(CommandHandler("motivate", cmd_motivate))
-    app.add_handler(CommandHandler("routine", cmd_routine))
-    app.add_handler(CommandHandler("diagram", cmd_diagram))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
