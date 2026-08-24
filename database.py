@@ -128,16 +128,34 @@ def is_bot_active(chat_id: int) -> bool:
 
 
 def ensure_user(user_id: int, chat_id: int, username: str, name: str):
+    """Create/update a user row without relying on a specific UNIQUE/PK constraint.
+
+    Older scores.db files may have a different users-table primary key than the
+    current (user_id, chat_id) composite key. Using INSERT ... ON CONFLICT with
+    an unavailable conflict target causes SQLite to raise:
+    'ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint'.
+    A SELECT + UPDATE/INSERT works with both old and new schemas.
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO users (user_id, chat_id, username, name, last_active)
-        VALUES (?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(user_id, chat_id) DO UPDATE SET
-            username = excluded.username,
-            name = excluded.name,
-            last_active = datetime('now')
-    """, (user_id, chat_id, username or "", name or "User"))
+    username = username or ""
+    name = name or "User"
+    cursor.execute(
+        "SELECT rowid FROM users WHERE user_id = ? AND chat_id = ? LIMIT 1",
+        (user_id, chat_id),
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE users SET username = ?, name = ?, last_active = datetime('now') WHERE rowid = ?",
+            (username, name, row["rowid"]),
+        )
+    else:
+        cursor.execute(
+            """INSERT INTO users (user_id, chat_id, username, name, last_active)
+               VALUES (?, ?, ?, ?, datetime('now'))""",
+            (user_id, chat_id, username, name),
+        )
     conn.commit()
     conn.close()
 

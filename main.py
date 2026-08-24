@@ -7,6 +7,7 @@ import random
 import os
 import tempfile
 import shutil
+import traceback
 import yt_dlp
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta
@@ -67,11 +68,15 @@ async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     err = context.error
-    logger.exception("Unhandled Telegram update error", exc_info=err)
+    logger.error("UNHANDLED TELEGRAM UPDATE ERROR: %s", err)
+    if err:
+        logger.error("TRACEBACK:\n%s", "".join(traceback.format_exception(type(err), err, err.__traceback__)))
+    else:
+        logger.error("No exception object was provided by python-telegram-bot.")
     try:
         if isinstance(update, Update) and update.effective_message:
             await update.effective_message.reply_text(
-                "❌ Bot में error आया। Admin Railway logs देखें।"
+                "❌ Bot में error आया। Railway logs में `UNHANDLED TELEGRAM UPDATE ERROR` देखें।"
             )
     except Exception:
         logger.exception("Failed to send error message to user")
