@@ -579,6 +579,39 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
 
+
+
+async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("🤫 यह कमांड सिर्फ मेरे DM में काम करता है!")
+        return
+    confession_text = " ".join(context.args)
+    if not confession_text:
+        await update.message.reply_text("❌ इस्तेमाल का तरीका: /confess <मैसेज>")
+        return
+    group_id = db.get_latest_group_for_user(update.effective_user.id)
+    if not group_id:
+        await update.message.reply_text("❌ पहले मेन ग्रुप में एक मैसेज भेजें!")
+        return
+    try:
+        await context.bot.send_message(chat_id=group_id, text=f"🤫 *New Confession:*\n\n{confession_text}", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("✅ मैसेज भेज दिया गया है!")
+    except Exception:
+        await update.message.reply_text("❌ मैसेज भेजने में दिक्कत आई।")
+
+async def cmd_gm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    await update.message.reply_text("Good Morning! ☀️ उठो और आज के दिन को शानदार बनाओ!")
+
+async def cmd_lovememe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    await update.message.reply_photo(photo="https://i.pinimg.com/736x/2b/9a/99/2b9a99ea7035ce4a25501314ecf1489e.jpg", caption="For you! ❤️")
+
+async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context): return
+    await update.message.reply_text("चाँदनी चाँद से होती है, सितारों से नहीं... ❤️")
+
 def main():
     if not config.TELEGRAM_BOT_TOKEN:
         sys.exit(1)
