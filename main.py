@@ -309,64 +309,110 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
 
 async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style: str):
-    if not await check_bot_active(update, context): return
-    user    = update.effective_user
-    chat_id = update.effective_chat.id
-    args    = context.args or []
-    cmd = "/quiz" if style == "quiz" else "/pyq"
-    if len(args) < 2:
-        await update.message.reply_text(f"Usage: `{cmd} <topic> <number>`", parse_mode=ParseMode.MARKDOWN)
+    """Start a quiz/PYQ with full error isolation so one bad legacy DB or Telegram
+    permission never crashes the handler silently."""
+    if not await check_bot_active(update, context):
         return
     try:
-        count = int(args[-1])
-    except ValueError:
-        await update.message.reply_text("❗ Last argument must be a number.")
-        return
-    if not (1 <= count <= 50):
-        await update.message.reply_text("❗ Number must be between 1 and 50.")
-        return
-    topic = " ".join(args[:-1])
+        user = update.effective_user
+        chat_id = update.effective_chat.id
+        args = context.args or []
+        cmd = "/quiz" if style == "quiz" else "/pyq"
 
-    if user.id in quiz_module.active_sessions:
-        await update.message.reply_text("⚠️ You already have an active quiz running.")
-        return
+        if len(args) < 2:
+            await update.message.reply_text(f"Usage: `{cmd} <topic> <number>`", parse_mode=ParseMode.MARKDOWN)
+            return
 
-    db.ensure_user(user.id, chat_id, user.username, user.full_name)
-    timer = db.get_group_timer(chat_id)
-    wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
+        try:
+            count = int(args[-1])
+        except ValueError:
+            await update.message.reply_text("❗ Last argument must be a number.")
+            return
+        if not (1 <= count <= 50):
+            await update.message.reply_text("❗ Number must be between 1 and 50.")
+            return
 
-    try:
-        questions = await quiz_module.generate_questions(topic, count, style)
+        topic = " ".join(args[:-1]).strip()
+        if not topic:
+            await update.message.reply_text("❗ Topic खाली नहीं हो सकता।")
+            return
+
+        if user.id in quiz_module.active_sessions:
+            await update.message.reply_text("⚠️ You already have an active quiz running.")
+            return
+
+        # This now works with migrated legacy scores.db files.
+        db.ensure_user(user.id, chat_id, user.username, user.full_name)
+        timer = db.get_group_timer(chat_id)
+        wait_msg = await update.message.reply_text(
+            f"⏳ Generating *{count}* questions on *{topic}*…",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        try:
+            questions = await quiz_module.generate_questions(topic, count, style)
+        except Exception as exc:
+            logger.exception("Question generation failed for %s topic=%r count=%s", style, topic, count)
+            await wait_msg.edit_text(
+                "❌ Questions generate नहीं हो पाए।\n"
+                f"कारण: {str(exc)[:350]}"
+            )
+            return
+
+        if not questions:
+            await wait_msg.edit_text("❌ कोई question generate नहीं हुआ।")
+            return
+
+        actual = len(questions)
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
+        label = "📝 PYQ Quiz" if style == "pyq" else "📚 Quiz"
+        bot = context.bot
+
+        if chat_id < 0:
+            session = quiz_module.start_group_session(chat_id, questions, f"{topic} ({label})", timer)
+            await update.message.reply_text(
+                f"👥 Group {label} starting!\nTopic: {topic}\nQuestions: {actual}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await quiz_module.send_group_question(bot, session)
+            if not session.get("current_poll_id"):
+                quiz_module.group_sessions.pop(chat_id, None)
+                await update.message.reply_text(
+                    "❌ Quiz poll Telegram में send नहीं हो पाया। Bot को इस group में Polls भेजने की permission दें।"
+                )
+                return
+            task = asyncio.create_task(quiz_module._advance_group_after_timeout(bot, chat_id, 0))
+            session["advance_job"] = task
+        else:
+            session = quiz_module.start_session(user.id, chat_id, questions, topic, style, timer)
+            await update.message.reply_text(
+                f"👤 {label} starting!\nTopic: {topic}\nQuestions: {actual}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await quiz_module.send_question(bot, session)
+            if not session.get("current_poll_id"):
+                quiz_module.active_sessions.pop(user.id, None)
+                await update.message.reply_text(
+                    "❌ Quiz poll भेजा नहीं जा सका। Bot की Telegram permission/check करें।"
+                )
+                return
+            task = asyncio.create_task(quiz_module._advance_after_timeout(bot, user.id, 0))
+            session["advance_job"] = task
+
     except Exception as exc:
-        logger.error("Question generation failed: %s", exc)
-        await wait_msg.edit_text("❌ Failed to generate questions. Gemini may be temporarily unavailable. Please try again later.")
-        return
-
-    if not questions:
-        await wait_msg.edit_text("❌ Could not generate any questions.")
-        return
-
-    actual = len(questions)
-    try:
-        await wait_msg.delete()
-    except Exception:
-        pass
-
-    label = "📝 PYQ Quiz" if style == "pyq" else "📚 Quiz"
-    bot = context.bot
-
-    if chat_id < 0:
-        session = quiz_module.start_group_session(chat_id, questions, f"{topic} ({label})", timer)
-        await update.message.reply_text(f"👥 Group {label} starting!\nTopic: {topic}\nQuestions: {actual}", parse_mode=ParseMode.MARKDOWN)
-        await quiz_module.send_group_question(bot, session)
-        task = asyncio.create_task(quiz_module._advance_group_after_timeout(bot, chat_id, 0))
-        session["advance_job"] = task
-    else:
-        session = quiz_module.start_session(user.id, chat_id, questions, topic, style, timer)
-        await update.message.reply_text(f"👤 {label} starting!\nTopic: {topic}\nQuestions: {actual}", parse_mode=ParseMode.MARKDOWN)
-        await quiz_module.send_question(bot, session)
-        task = asyncio.create_task(quiz_module._advance_after_timeout(bot, user.id, 0))
-        session["advance_job"] = task
+        logger.exception("QUIZ HANDLER FAILED: style=%s", style)
+        try:
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "❌ Quiz start करते समय error आया।\n"
+                    f"कारण: {str(exc)[:350]}"
+                )
+        except Exception:
+            logger.exception("Failed to send quiz error message")
 
 async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _start_quiz(update, context, style="quiz")

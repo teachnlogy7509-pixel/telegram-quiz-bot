@@ -75,31 +75,51 @@ def init_db():
         )
     """)
 
-    # Backward-compatible schema migration for existing scores.db files.
-    # Older deployments may have a users table without newer columns (for example
-    # last_active). CREATE TABLE IF NOT EXISTS does not add missing columns, so
-    # migrate them explicitly without deleting existing user/score data.
-    required_user_columns = {
-        "username": "TEXT",
-        "name": "TEXT",
-        "xp": "INTEGER DEFAULT 0",
-        "total_score": "INTEGER DEFAULT 0",
-        "correct": "INTEGER DEFAULT 0",
-        "wrong": "INTEGER DEFAULT 0",
-        "unanswered": "INTEGER DEFAULT 0",
-        "total_quizzes": "INTEGER DEFAULT 0",
-        "best_score": "INTEGER DEFAULT 0",
-        "last_quiz_score": "INTEGER DEFAULT 0",
-        "streak": "INTEGER DEFAULT 0",
-        "last_active": "TEXT",
+    # Backward-compatible schema migration for *all* known tables.
+    # CREATE TABLE IF NOT EXISTS does not modify an existing table, so older
+    # scores.db files can keep old schemas. Add any missing non-key columns
+    # without deleting existing scores/users.
+    required_columns = {
+        "users": {
+            "username": "TEXT",
+            "name": "TEXT",
+            "xp": "INTEGER DEFAULT 0",
+            "total_score": "INTEGER DEFAULT 0",
+            "correct": "INTEGER DEFAULT 0",
+            "wrong": "INTEGER DEFAULT 0",
+            "unanswered": "INTEGER DEFAULT 0",
+            "total_quizzes": "INTEGER DEFAULT 0",
+            "best_score": "INTEGER DEFAULT 0",
+            "last_quiz_score": "INTEGER DEFAULT 0",
+            "streak": "INTEGER DEFAULT 0",
+            "last_active": "TEXT",
+        },
+        "group_settings": {
+            "timer": "INTEGER DEFAULT 30",
+        },
+        "schedules": {
+            "topic": "TEXT",
+            "count": "INTEGER DEFAULT 10",
+        },
+        "pdf_files": {
+            "file_id": "TEXT",
+            "uploader_id": "INTEGER",
+        },
+        "bot_status": {
+            "is_active": "INTEGER DEFAULT 1",
+        },
     }
-    cursor.execute("PRAGMA table_info(users)")
-    existing_user_columns = {row[1] for row in cursor.fetchall()}
-    for column, definition in required_user_columns.items():
-        if column not in existing_user_columns:
-            cursor.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
-            logger.info("Migrated users table: added column %s", column)
 
+    for table, columns in required_columns.items():
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cursor.fetchall()}
+        for column, definition in columns.items():
+            if column not in existing:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                logger.info("Migrated %s table: added column %s", table, column)
+
+    # Seed a sane timer row only when one is requested later; no row is required
+    # because get_group_timer() already falls back to 30 seconds.
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully. Using %s", DB_NAME)
@@ -118,13 +138,16 @@ def set_bot_status(chat_id: int, active: bool):
 
 def is_bot_active(chat_id: int) -> bool:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT is_active FROM bot_status WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row is None:
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_active FROM bot_status WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        return True if row is None else bool(row["is_active"])
+    except sqlite3.Error as exc:
+        logger.warning("bot_status read failed; treating bot as active: %s", exc)
         return True
-    return bool(row["is_active"])
+    finally:
+        conn.close()
 
 
 def ensure_user(user_id: int, chat_id: int, username: str, name: str):
@@ -285,11 +308,18 @@ def set_group_timer(chat_id: int, timer: int):
 
 def get_group_timer(chat_id: int) -> int:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT timer FROM group_settings WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row["timer"] if row and row["timer"] else 30
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT timer FROM group_settings WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        return int(row["timer"]) if row and row["timer"] else 30
+    except sqlite3.Error as exc:
+        # Legacy DBs may have an older/malformed group_settings table. The quiz
+        # must still start, so use the configured default timer.
+        logger.warning("group_settings read failed; using default 30s: %s", exc)
+        return 30
+    finally:
+        conn.close()
 
 
 def get_all_schedules():
