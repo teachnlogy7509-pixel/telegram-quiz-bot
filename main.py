@@ -36,15 +36,45 @@ ADMIN_IDS = [8043570403]
 
 # ADMIN CONTROL MIDDLEWARE
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat is None or user is None:
+        return True
 
+    chat_id = chat.id
+    user_id = user.id
+
+    # Admin can always use /on even when the chat is paused.
     if update.message and update.message.text:
         text = update.message.text.strip()
         if text.startswith('/on') and user_id in ADMIN_IDS:
             return True
 
-    return db.is_bot_active(chat_id)
+    active = db.is_bot_active(chat_id)
+    if active:
+        return True
+
+    # Never silently drop commands: explain why the bot did not respond.
+    if update.message:
+        try:
+            await update.message.reply_text(
+                "⏸️ Bot अभी इस chat में PAUSED है। Admin `/on` भेजकर इसे चालू कर सकता है।",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logger.exception("Failed to send bot-paused notice")
+    return False
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    err = context.error
+    logger.exception("Unhandled Telegram update error", exc_info=err)
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(
+                "❌ Bot में error आया। Admin Railway logs देखें।"
+            )
+    except Exception:
+        logger.exception("Failed to send error message to user")
 
 async def cmd_bot_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -678,6 +708,7 @@ def main():
     # General Handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
     app.add_handler(PollAnswerHandler(on_poll_answer))
+    app.add_error_handler(error_handler)
 
     logger.info("Bot polling with Gemini + Groq failover + voice processing active …")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
