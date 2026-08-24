@@ -75,6 +75,31 @@ def init_db():
         )
     """)
 
+    # Backward-compatible schema migration for existing scores.db files.
+    # Older deployments may have a users table without newer columns (for example
+    # last_active). CREATE TABLE IF NOT EXISTS does not add missing columns, so
+    # migrate them explicitly without deleting existing user/score data.
+    required_user_columns = {
+        "username": "TEXT",
+        "name": "TEXT",
+        "xp": "INTEGER DEFAULT 0",
+        "total_score": "INTEGER DEFAULT 0",
+        "correct": "INTEGER DEFAULT 0",
+        "wrong": "INTEGER DEFAULT 0",
+        "unanswered": "INTEGER DEFAULT 0",
+        "total_quizzes": "INTEGER DEFAULT 0",
+        "best_score": "INTEGER DEFAULT 0",
+        "last_quiz_score": "INTEGER DEFAULT 0",
+        "streak": "INTEGER DEFAULT 0",
+        "last_active": "TEXT",
+    }
+    cursor.execute("PRAGMA table_info(users)")
+    existing_user_columns = {row[1] for row in cursor.fetchall()}
+    for column, definition in required_user_columns.items():
+        if column not in existing_user_columns:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+            logger.info("Migrated users table: added column %s", column)
+
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully. Using %s", DB_NAME)
