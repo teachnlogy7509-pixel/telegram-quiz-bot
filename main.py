@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                         MessageHandler, PollAnswerHandler, filters, ConversationHandler)
+                         MessageHandler, PollAnswerHandler, TypeHandler, filters, ConversationHandler)
 
 import config
 import database as db
@@ -38,6 +38,7 @@ ADMIN_IDS = [8043570403]
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+    logger.info("UPDATE command/check: chat=%s user=%s text=%r", chat_id, user_id, getattr(update.effective_message, "text", None))
 
     if update.message and update.message.text:
         text = update.message.text.strip()
@@ -274,7 +275,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
 
 async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style: str):
-    if not await check_bot_active(update, context): return
+    logger.info("QUIZ HANDLER ENTERED: style=%s chat=%s text=%r", style, update.effective_chat.id if update.effective_chat else None, getattr(update.effective_message, "text", None))
+    if not await check_bot_active(update, context):
+        logger.warning("QUIZ BLOCKED BY BOT STATUS: chat=%s", update.effective_chat.id if update.effective_chat else None)
+        return
     user    = update.effective_user
     chat_id = update.effective_chat.id
     args    = context.args or []
@@ -299,6 +303,7 @@ async def _start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, style:
     db.ensure_user(user.id, chat_id, user.username, user.full_name)
     timer = db.get_group_timer(chat_id)
     wait_msg = await update.message.reply_text(f"⏳ Generating *{count}* questions on *{topic}*…", parse_mode=ParseMode.MARKDOWN)
+    logger.info("QUIZ WAIT MESSAGE SENT: style=%s topic=%s count=%s", style, topic, count)
 
     try:
         questions = await quiz_module.generate_questions(topic, count, style)
@@ -578,39 +583,19 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
+    logger.info("POST_INIT completed")
 
-
-
-async def cmd_confess(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    if update.effective_chat.type != 'private':
-        await update.message.reply_text("🤫 यह कमांड सिर्फ मेरे DM में काम करता है!")
-        return
-    confession_text = " ".join(context.args)
-    if not confession_text:
-        await update.message.reply_text("❌ इस्तेमाल का तरीका: /confess <मैसेज>")
-        return
-    group_id = db.get_latest_group_for_user(update.effective_user.id)
-    if not group_id:
-        await update.message.reply_text("❌ पहले मेन ग्रुप में एक मैसेज भेजें!")
-        return
+async def _log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await context.bot.send_message(chat_id=group_id, text=f"🤫 *New Confession:*\n\n{confession_text}", parse_mode=ParseMode.MARKDOWN)
-        await update.message.reply_text("✅ मैसेज भेज दिया गया है!")
+        logger.info("INCOMING UPDATE: id=%s type=%s chat=%s text=%r", update.update_id,
+                    update.effective_message.__class__.__name__ if update.effective_message else None,
+                    update.effective_chat.id if update.effective_chat else None,
+                    getattr(update.effective_message, "text", None))
     except Exception:
-        await update.message.reply_text("❌ मैसेज भेजने में दिक्कत आई।")
+        logger.exception("Failed to log incoming update")
 
-async def cmd_gm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_text("Good Morning! ☀️ उठो और आज के दिन को शानदार बनाओ!")
-
-async def cmd_lovememe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_photo(photo="https://i.pinimg.com/736x/2b/9a/99/2b9a99ea7035ce4a25501314ecf1489e.jpg", caption="For you! ❤️")
-
-async def cmd_shayari(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_bot_active(update, context): return
-    await update.message.reply_text("चाँदनी चाँद से होती है, सितारों से नहीं... ❤️")
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.exception("UNHANDLED BOT ERROR", exc_info=context.error)
 
 def main():
     if not config.TELEGRAM_BOT_TOKEN:
@@ -631,6 +616,9 @@ def main():
         logger.warning("Groq key verification failed at startup: %s", e)
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
+
+    app.add_handler(TypeHandler(Update, _log_update), group=-1)
+    app.add_error_handler(_error_handler)
 
     # Admin Control Handlers
     app.add_handler(CommandHandler("on", cmd_bot_on))
