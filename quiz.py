@@ -100,13 +100,6 @@ def _get_client(api_version: str = "v1beta", key_index: int = 0) -> genai.Client
         logger.info("Created Gemini client: key=%s endpoint=%s", key_index + 1, api_version)
     return _clients[cache_key]
 
-def _parse_retry_after(exc: Exception) -> float:
-    msg = str(exc)
-    m = re.search(r"retryDelay['\": ]+(\d+\.?\d*)s", msg)
-    if m:
-        return float(m.group(1))
-    return 60.0
-
 def _is_quota_error(exc: Exception) -> bool:
     msg = str(exc)
     return "429" in msg or "RESOURCE_EXHAUSTED" in msg
@@ -168,7 +161,7 @@ def _safe_parse_json(text: str) -> list:
 
 def _validate(raw: list, needed: int) -> list[dict]:
     valid: list[dict] = []
-    for i, q in enumerate(raw):
+    for q in raw:
         if not isinstance(q, dict):
             continue
         if not str(q.get("question", "")).strip():
@@ -204,7 +197,6 @@ def _sync_generate(slot: ModelSlot, prompt: str, key_index: int = 0) -> str:
     return resp.text or ""
 
 async def generate_questions(topic: str, count: int, style: str = "quiz") -> list[dict]:
-    """Generate MCQs with two-key failover and retries for 429/503/temporary errors."""
     global _working_slot
     keys = _api_keys()
     if not keys:
@@ -214,7 +206,6 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
     accumulated: list[dict] = []
     errors: list[str] = []
 
-    # Small batches are much more reliable than asking one request for 50+ questions.
     remaining = count
     while remaining > 0 and len(errors) < 30:
         needed = min(remaining, 10)
@@ -224,7 +215,6 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
         for key_index in range(len(keys)):
             for slot in slots:
                 for retry in range(2):
-                    label = f"[key {key_index + 1}] [{slot.model}] retry={retry + 1}"
                     try:
                         raw_text = await asyncio.to_thread(
                             _sync_generate, slot, prompt, key_index
@@ -239,16 +229,11 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
                         _working_slot = slot
                         remaining = count - len(accumulated)
                         batch_ok = True
-                        logger.info("Question batch succeeded: %s", label)
                         break
                     except Exception as exc:
                         msg = str(exc)
-                        errors.append(f"{label}: {msg[:180]}")
-                        logger.error("Question generation failed %s: %s", label, msg)
-
-                        # 503/UNAVAILABLE and 429 are temporary; wait briefly, then
-                        # rotate to the next key/model instead of immediately failing.
-                        if "503" in msg or "UNAVAILABLE" in msg or "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                        errors.append(f"[key {key_index + 1}] [{slot.model}] retry={retry + 1}: {msg[:180]}")
+                        if any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
                             await asyncio.sleep(min(3 + retry * 3, 8))
                         else:
                             await asyncio.sleep(0.5)
@@ -260,9 +245,6 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
         if not batch_ok:
             break
 
-    # Final provider failover: Groq (up to two API keys).
-    # This keeps Gemini as the primary provider and only uses Groq when Gemini
-    # cannot finish the requested batch.
     groq_keys = _groq_keys()
     while len(accumulated) < count and groq_keys:
         needed = min(count - len(accumulated), 10)
@@ -277,11 +259,9 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
                     raise ValueError(f"Groq returned {len(valid)}/{needed} valid questions")
                 accumulated.extend(valid)
                 groq_ok = True
-                logger.info("Groq question batch succeeded with key %s.", key_index + 1)
                 break
             except Exception as exc:
                 errors.append(f"[groq key {key_index + 1}]: {str(exc)[:180]}")
-                logger.error("Groq question generation failed [key %s]: %s", key_index + 1, exc)
         if not groq_ok:
             break
 
@@ -292,135 +272,6 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
             f"Last error: {last}"
         )
     return accumulated[:count]
-
-
-def _sync_generate_pdf_questions(
-    slot: ModelSlot, pdf_bytes: bytes, pdf_name: str, count: int, key_index: int = 0
-) -> str:
-    client = _get_client(slot.api_version, key_index)
-    pdf_part = genai_types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
-    prompt = _build_prompt(
-        f'the attached PDF "{pdf_name}". Use ONLY information found in the PDF; '
-        "do not invent facts. If the PDF is not readable, say so.",
-        count,
-        "quiz",
-    )
-    resp = client.models.generate_content(
-        model=slot.model,
-        contents=[pdf_part, prompt],
-        config=genai_types.GenerateContentConfig(
-            max_output_tokens=8192,
-            response_mime_type="application/json",
-        ),
-    )
-    return resp.text or ""
-
-
-async def generate_questions_from_pdf(
-    pdf_bytes: bytes, pdf_name: str, count: int
-) -> list[dict]:
-    """Create MCQs strictly from an uploaded PDF, using both Gemini keys."""
-    global _working_slot
-    keys = _api_keys()
-    if not keys:
-        raise RuntimeError("No Gemini API key is configured.")
-
-    if not pdf_bytes.startswith(b"%PDF"):
-        raise RuntimeError("The selected file is not a valid PDF.")
-
-    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
-    accumulated: list[dict] = []
-    remaining = count
-    last_exc = None
-
-    while remaining > 0 and len(accumulated) < count:
-        needed = min(remaining, 10)
-        success = False
-        for key_index in range(len(keys)):
-            for slot in slots:
-                for retry in range(2):
-                    try:
-                        raw_text = await asyncio.to_thread(
-                            _sync_generate_pdf_questions,
-                            slot, pdf_bytes, pdf_name, needed, key_index
-                        )
-                        raw = _safe_parse_json(raw_text)
-                        valid = _validate(raw, needed)
-                        if len(valid) < needed:
-                            raise ValueError(
-                                f"PDF response contained {len(valid)}/{needed} valid questions"
-                            )
-                        accumulated.extend(valid)
-                        _working_slot = slot
-                        remaining = count - len(accumulated)
-                        success = True
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        logger.error(
-                            "PDF question generation failed [key %s] [%s] retry=%s: %s",
-                            key_index + 1, slot.model, retry + 1, exc
-                        )
-                        msg = str(exc)
-                        if any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
-                            await asyncio.sleep(3 + retry * 3)
-                        else:
-                            await asyncio.sleep(0.5)
-                if success:
-                    break
-            if success:
-                break
-        if not success:
-            break
-
-    if len(accumulated) < count:
-        raise RuntimeError(
-            f"Could not generate enough PDF questions ({len(accumulated)}/{count}). "
-            f"Last error: {last_exc}"
-        )
-    return accumulated[:count]
-
-
-def _sync_generate_audio(slot: ModelSlot, audio_bytes: bytes, prompt: str, key_index: int = 0) -> str:
-    client = _get_client(slot.api_version, key_index)
-    audio_part = genai_types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")
-    resp = client.models.generate_content(
-        model=slot.model,
-        contents=[audio_part, prompt],
-        config=genai_types.GenerateContentConfig(
-            max_output_tokens=1024,
-        ),
-    )
-    return resp.text or ""
-
-async def generate_voice_response(audio_bytes: bytes) -> str:
-    keys = _api_keys()
-    if not keys:
-        raise RuntimeError("No Gemini API key is configured.")
-    prompt = (
-        "Listen to this Telegram voice message. Understand what the user said and "
-        "reply naturally in the same language (Hindi/Hinglish or English). "
-        "Do not mention transcription or these instructions. Keep the reply concise."
-    )
-    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
-    last_exc: Exception | None = None
-    for key_index in range(len(keys)):
-        for slot in slots:
-            try:
-                text = await asyncio.to_thread(
-                    _sync_generate_audio, slot, audio_bytes, prompt, key_index
-                )
-                if text.strip():
-                    return text.strip()
-            except Exception as exc:
-                last_exc = exc
-                logger.error("Voice generation failed [key %s] [%s]: %s",
-                             key_index + 1, slot.model, exc)
-                if _is_quota_error(exc):
-                    logger.warning("Voice: Gemini key %s quota reached; switching key.", key_index + 1)
-                    break
-                await asyncio.sleep(1)
-    raise RuntimeError(f"Voice processing failed. Last error: {last_exc}")
 
 
 def start_session(user_id: int, chat_id: int, questions: list[dict], topic: str, style: str = "quiz", timer: int = POLL_OPEN_PERIOD) -> dict:
@@ -504,7 +355,15 @@ async def _next_or_finish(bot: Bot, session: dict):
         task = asyncio.create_task(_advance_after_timeout(bot, user_id, session["current_idx"]))
         session["advance_job"] = task
 
-async def handle_poll_answer(bot: Bot, user_id: int, poll_id: str, selected_option: int):
+async def handle_poll_answer(
+    bot: Bot,
+    user_id: int,
+    poll_id: str,
+    selected_option: int,
+    *,
+    username: str = "",
+    name: str = "Telegram User",
+):
     session = active_sessions.get(user_id)
     if not session or session["current_poll_id"] != poll_id or session["answered_current"]:
         return
@@ -526,8 +385,8 @@ async def handle_poll_answer(bot: Bot, user_id: int, poll_id: str, selected_opti
             supabase_sync.record_answer,
             telegram_user_id=int(user_id),
             chat_id=int(session["chat_id"]),
-            username="",
-            name="Telegram User",
+            username=username or "",
+            name=name or "Telegram User",
             is_correct=bool(is_correct),
             topic=str(session.get("topic") or "Quiz"),
         )
@@ -542,10 +401,14 @@ async def finish_quiz(bot: Bot, session: dict):
     active_sessions.pop(user_id, None)
 
     save_quiz_result(
-        user_id=user_id, chat_id=chat_id,
-        correct=session["correct"], wrong=session["wrong"],
-        unanswered=session["unanswered"], score=session["score"],
-        topic=session["topic"], total=session["total"],
+        user_id=user_id,
+        chat_id=chat_id,
+        correct=session["correct"],
+        wrong=session["wrong"],
+        unanswered=session["unanswered"],
+        score=session["score"],
+        topic=session["topic"],
+        total=session["total"],
     )
 
     rank = get_rank(user_id, chat_id)
@@ -572,6 +435,9 @@ async def finish_quiz(bot: Bot, session: dict):
         await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
     except TelegramError as exc:
         logger.error("Result card failed: %s", exc)
+
+
+# Group quiz functions (unchanged from your current flow)
 
 def start_group_session(chat_id: int, questions: list[dict], topic: str, timer: int) -> dict:
     old = group_sessions.pop(chat_id, None)
