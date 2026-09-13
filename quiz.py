@@ -137,6 +137,108 @@ def verify_gemini_key() -> bool:
 
 
 # =====================
+# PDF -> questions (used by main.py)
+# =====================
+
+def _sync_generate_pdf_questions(
+    slot: ModelSlot,
+    pdf_bytes: bytes,
+    pdf_name: str,
+    count: int,
+    key_index: int = 0,
+) -> str:
+    client = _get_client(slot.api_version, key_index)
+    pdf_part = genai_types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+    prompt = _build_prompt(
+        f'the attached PDF "{pdf_name}". Use ONLY information found in the PDF; '
+        "do not invent facts. If the PDF is not readable, say so.",
+        count,
+        "quiz",
+    )
+    resp = client.models.generate_content(
+        model=slot.model,
+        contents=[pdf_part, prompt],
+        config=genai_types.GenerateContentConfig(
+            max_output_tokens=8192,
+            response_mime_type="application/json",
+        ),
+    )
+    return resp.text or ""
+
+
+async def generate_questions_from_pdf(pdf_bytes: bytes, pdf_name: str, count: int) -> list[dict]:
+    """Used by /pdfquiz in main.py."""
+    global _working_slot
+    keys = _api_keys()
+    if not keys:
+        raise RuntimeError("No Gemini API key is configured.")
+
+    if not pdf_bytes or not isinstance(pdf_bytes, (bytes, bytearray)):
+        raise RuntimeError("Invalid PDF bytes.")
+    if not bytes(pdf_bytes).startswith(b"%PDF"):
+        raise RuntimeError("The selected file is not a valid PDF.")
+
+    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
+    accumulated: list[dict] = []
+    remaining = count
+    last_exc: Exception | None = None
+
+    while remaining > 0 and len(accumulated) < count:
+        needed = min(remaining, 10)
+        success = False
+        for key_index in range(len(keys)):
+            for slot in slots:
+                for retry in range(2):
+                    try:
+                        raw_text = await asyncio.to_thread(
+                            _sync_generate_pdf_questions,
+                            slot,
+                            bytes(pdf_bytes),
+                            pdf_name,
+                            needed,
+                            key_index,
+                        )
+                        raw = _safe_parse_json(raw_text)
+                        valid = _validate(raw, needed)
+                        if len(valid) < needed:
+                            raise ValueError(
+                                f"PDF response contained {len(valid)}/{needed} valid questions"
+                            )
+                        accumulated.extend(valid)
+                        _working_slot = slot
+                        remaining = count - len(accumulated)
+                        success = True
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        msg = str(exc)
+                        logger.error(
+                            "PDF question generation failed [key %s] [%s] retry=%s: %s",
+                            key_index + 1,
+                            slot.model,
+                            retry + 1,
+                            msg,
+                        )
+                        if any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                            await asyncio.sleep(3 + retry * 3)
+                        else:
+                            await asyncio.sleep(0.5)
+                if success:
+                    break
+            if success:
+                break
+        if not success:
+            break
+
+    if len(accumulated) < count:
+        raise RuntimeError(
+            f"Could not generate enough PDF questions ({len(accumulated)}/{count}). "
+            f"Last error: {last_exc}"
+        )
+    return accumulated[:count]
+
+
+# =====================
 # Voice (used by main.py)
 # =====================
 
@@ -154,10 +256,7 @@ def _sync_generate_audio(slot: ModelSlot, audio_bytes: bytes, prompt: str, key_i
 
 
 async def generate_voice_response(audio_bytes: bytes) -> str:
-    """Used by main.py for Telegram voice messages.
-
-    NOTE: Railway crash happened because main.py imports this symbol.
-    """
+    """Used by main.py for Telegram voice messages."""
     global _working_slot
     keys = _api_keys()
     if not keys:
@@ -378,6 +477,9 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
             f"Last error: {last}"
         )
     return accumulated[:count]
+
+
+# (rest of file unchanged from your current quiz logic)
 
 
 def start_session(
@@ -646,7 +748,6 @@ async def handle_group_poll_answer(
         stats["wrong"] += 1
         stats["score"] += WRONG_SCORE
 
-    # Supabase leaderboard sync (best-effort)
     try:
         await asyncio.to_thread(
             supabase_sync.record_answer,
@@ -698,7 +799,7 @@ async def finish_group_quiz(bot: Bot, session: dict):
             user_id=user_id,
             chat_id=chat_id,
             correct=stats["correct"],
-            wrong=stats[["wrong"]] if isinstance(stats.get("wrong"), int) else stats["wrong"],
+            wrong=stats["wrong"],
             unanswered=unanswered,
             score=stats["score"],
             topic=session["topic"],
