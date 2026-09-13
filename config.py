@@ -10,7 +10,7 @@ GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-# Secure RATHOD HUB score sync: set these only in Railway Variables.
+# Secure score sync: set only in Railway Variables.
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
