@@ -560,10 +560,16 @@ async def cmd_schedulelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer
     if not answer.option_ids: return
-    # option_ids is a list; pick first
     selected = answer.option_ids[0]
     if answer.poll_id in quiz_module.poll_to_user:
-        await quiz_module.handle_poll_answer(context.bot, answer.user.id, answer.poll_id, selected)
+        await quiz_module.handle_poll_answer(
+            context.bot,
+            answer.user.id,
+            answer.poll_id,
+            selected,
+            username=answer.user.username or "",
+            name=answer.user.full_name or (answer.user.first_name or "Telegram User"),
+        )
     elif answer.poll_id in quiz_module.poll_to_chat:
         chat_id = quiz_module.poll_to_chat[answer.poll_id]
         name = answer.user.full_name or "User"
