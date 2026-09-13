@@ -22,6 +22,7 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import scheduler as sched_module
+import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
 
 # Logging
@@ -94,6 +95,47 @@ async def cmd_bot_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     db.set_bot_status(chat_id, False)
     await update.message.reply_text("🔴 *Bot is now PAUSED!* अब बोट किसी भी मैसेज या कमांड का जवाब नहीं देगा।", parse_mode=ParseMode.MARKDOWN)
+
+async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Link a Telegram user to the Rathod Hub app account.
+
+    Flow:
+    1) In the app, user generates code.
+    2) User sends: /link CODE
+    3) Bot confirms linking via Supabase RPC (service_role).
+    """
+    if not await check_bot_active(update, context):
+        return
+    if not update.message:
+        return
+
+    args = context.args or []
+    if len(args) != 1:
+        await update.message.reply_text("Usage: /link CODE\nExample: /link A1B2C3")
+        return
+
+    code = (args[0] or "").strip().upper()
+    user = update.effective_user
+    if not user:
+        await update.message.reply_text("User not found.")
+        return
+
+    try:
+        res = supabase_sync.confirm_link(
+            code=code,
+            telegram_user_id=int(user.id),
+            username=user.username or "",
+            name=user.full_name or (user.first_name or "Telegram User"),
+        )
+    except Exception as exc:
+        logger.exception("/link failed")
+        await update.message.reply_text(f"❌ Link failed: {str(exc)[:200]}")
+        return
+
+    if res.get("success"):
+        await update.message.reply_text("✅ Linked successfully! Ab app me Telegram Score open karke leaderboard dekho.")
+    else:
+        await update.message.reply_text(f"❌ Link failed: {res.get('error','Unknown error')}")
 
 # PDF FILE MANAGER
 WAITING_FOR_FILE, WAITING_FOR_NAME = range(2)
@@ -269,6 +311,9 @@ HELP_TEXT = """
 /pyq <topic> <number> — PYQ-style quiz
 /pdfquiz <PDF name> <number> — PDF से quiz
 /timer <15|30|45|60> — Quiz timer
+
+🔗 Account Link:
+/link CODE — Rathod Hub account link
 
 📊 Stats:
 /leaderboard — Top 10 players
@@ -716,6 +761,9 @@ def main():
     # Admin Control Handlers
     app.add_handler(CommandHandler("on", cmd_bot_on))
     app.add_handler(CommandHandler("off", cmd_bot_off))
+
+    # Link Handler
+    app.add_handler(CommandHandler("link", cmd_link))
 
     # Core & Quiz Handlers
     app.add_handler(CommandHandler("start", cmd_start))
