@@ -17,6 +17,7 @@ from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
+import supabase_sync
 from config import (CORRECT_SCORE, POLL_OPEN_PERIOD,
                     UNANSWERED_SCORE, WRONG_SCORE,
                     GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_MODEL,
@@ -511,12 +512,27 @@ async def handle_poll_answer(bot: Bot, user_id: int, poll_id: str, selected_opti
     session["answered_current"] = True
     q = session["questions"][session["current_idx"]]
 
-    if selected_option == q["correct_index"]:
+    is_correct = selected_option == q["correct_index"]
+    if is_correct:
         session["correct"] += 1
         session["score"] += CORRECT_SCORE
     else:
         session["wrong"] += 1
         session["score"] += WRONG_SCORE
+
+    # Supabase leaderboard sync (best-effort; never break quiz flow)
+    try:
+        await asyncio.to_thread(
+            supabase_sync.record_answer,
+            telegram_user_id=int(user_id),
+            chat_id=int(session["chat_id"]),
+            username="",
+            name="Telegram User",
+            is_correct=bool(is_correct),
+            topic=str(session.get("topic") or "Quiz"),
+        )
+    except Exception as exc:
+        logger.warning("Supabase record_answer failed: %s", str(exc)[:200])
 
 async def finish_quiz(bot: Bot, session: dict):
     user_id = session["user_id"]
@@ -620,12 +636,27 @@ async def handle_group_poll_answer(bot: Bot, chat_id: int, user_id: int, name: s
         session["user_scores"][user_id] = {"name": name, "username": username, "correct": 0, "wrong": 0, "score": 0}
 
     stats = session["user_scores"][user_id]
-    if selected_option == session["current_correct"]:
+    is_correct = selected_option == session["current_correct"]
+    if is_correct:
         stats["correct"] += 1
         stats["score"] += CORRECT_SCORE
     else:
         stats["wrong"] += 1
         stats["score"] += WRONG_SCORE
+
+    # Supabase leaderboard sync (best-effort)
+    try:
+        await asyncio.to_thread(
+            supabase_sync.record_answer,
+            telegram_user_id=int(user_id),
+            chat_id=int(chat_id),
+            username=username or "",
+            name=name or "Telegram User",
+            is_correct=bool(is_correct),
+            topic=str(session.get("topic") or "Quiz"),
+        )
+    except Exception as exc:
+        logger.warning("Supabase record_answer (group) failed: %s", str(exc)[:200])
 
 async def _advance_group_after_timeout(bot: Bot, chat_id: int, question_index: int):
     session = group_sessions.get(chat_id)
