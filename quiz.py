@@ -18,17 +18,27 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 import supabase_sync
-from config import (CORRECT_SCORE, POLL_OPEN_PERIOD,
-                    UNANSWERED_SCORE, WRONG_SCORE,
-                    GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_MODEL,
-                    GROQ_API_KEY, GROQ_API_KEY_2, GROQ_MODEL)
+from config import (
+    CORRECT_SCORE,
+    POLL_OPEN_PERIOD,
+    UNANSWERED_SCORE,
+    WRONG_SCORE,
+    GEMINI_API_KEY,
+    GEMINI_API_KEY_2,
+    GEMINI_MODEL,
+    GROQ_API_KEY,
+    GROQ_API_KEY_2,
+    GROQ_MODEL,
+)
 from database import ensure_user, get_rank, save_quiz_result
 
 logger = logging.getLogger(__name__)
 
+
 class ModelSlot(NamedTuple):
     model: str
     api_version: str
+
 
 # Current Gemini API model IDs with automatic fallback across models and API keys.
 CANDIDATE_SLOTS: list[ModelSlot] = [
@@ -47,8 +57,10 @@ _clients: dict[tuple[int, str], genai.Client] = {}
 _working_slot: ModelSlot = CANDIDATE_SLOTS[0]
 _groq_clients: dict[int, Groq] = {}
 
+
 def _groq_keys() -> list[str]:
     return [k.strip() for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k and k.strip()]
+
 
 def _get_groq_client(key_index: int = 0) -> Groq:
     keys = _groq_keys()
@@ -58,18 +70,23 @@ def _get_groq_client(key_index: int = 0) -> Groq:
         _groq_clients[key_index] = Groq(api_key=keys[key_index])
     return _groq_clients[key_index]
 
+
 def _groq_generate(prompt: str, key_index: int = 0) -> str:
     client = _get_groq_client(key_index)
     response = client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[
-            {"role": "system", "content": "You are a reliable quiz-question generator. Return only the requested JSON."},
+            {
+                "role": "system",
+                "content": "You are a reliable quiz-question generator. Return only the requested JSON.",
+            },
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
         max_completion_tokens=8192,
     )
     return response.choices[0].message.content or ""
+
 
 def verify_groq_keys() -> bool:
     ok = False
@@ -87,6 +104,7 @@ def verify_groq_keys() -> bool:
 def _api_keys() -> list[str]:
     return [k.strip() for k in (GEMINI_API_KEY, GEMINI_API_KEY_2) if k and k.strip()]
 
+
 def _get_client(api_version: str = "v1beta", key_index: int = 0) -> genai.Client:
     keys = _api_keys()
     if key_index >= len(keys):
@@ -100,9 +118,11 @@ def _get_client(api_version: str = "v1beta", key_index: int = 0) -> genai.Client
         logger.info("Created Gemini client: key=%s endpoint=%s", key_index + 1, api_version)
     return _clients[cache_key]
 
+
 def _is_quota_error(exc: Exception) -> bool:
     msg = str(exc)
     return "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
 
 def verify_gemini_key() -> bool:
     ok = False
@@ -115,19 +135,91 @@ def verify_gemini_key() -> bool:
             logger.warning("Gemini key %s validation failed: %s", key_index + 1, exc)
     return ok
 
+
+# =====================
+# Voice (used by main.py)
+# =====================
+
+def _sync_generate_audio(slot: ModelSlot, audio_bytes: bytes, prompt: str, key_index: int = 0) -> str:
+    client = _get_client(slot.api_version, key_index)
+    audio_part = genai_types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")
+    resp = client.models.generate_content(
+        model=slot.model,
+        contents=[audio_part, prompt],
+        config=genai_types.GenerateContentConfig(
+            max_output_tokens=1024,
+        ),
+    )
+    return resp.text or ""
+
+
+async def generate_voice_response(audio_bytes: bytes) -> str:
+    """Used by main.py for Telegram voice messages.
+
+    NOTE: Railway crash happened because main.py imports this symbol.
+    """
+    global _working_slot
+    keys = _api_keys()
+    if not keys:
+        raise RuntimeError("No Gemini API key is configured.")
+
+    prompt = (
+        "Listen to this Telegram voice message. Understand what the user said and "
+        "reply naturally in the same language (Hindi/Hinglish or English). "
+        "Do not mention transcription or these instructions. Keep the reply concise."
+    )
+
+    slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
+    last_exc: Exception | None = None
+
+    for key_index in range(len(keys)):
+        for slot in slots:
+            try:
+                text = await asyncio.to_thread(
+                    _sync_generate_audio, slot, audio_bytes, prompt, key_index
+                )
+                if text.strip():
+                    _working_slot = slot
+                    return text.strip()
+            except Exception as exc:
+                last_exc = exc
+                logger.error(
+                    "Voice generation failed [key %s] [%s]: %s",
+                    key_index + 1,
+                    slot.model,
+                    exc,
+                )
+                if _is_quota_error(exc):
+                    logger.warning(
+                        "Voice: Gemini key %s quota reached; switching key.",
+                        key_index + 1,
+                    )
+                    break
+                await asyncio.sleep(1)
+
+    raise RuntimeError(f"Voice processing failed. Last error: {last_exc}")
+
+
+# =====================
+# Quiz core
+# =====================
+
 # in-memory session store
 active_sessions: dict[int, dict] = {}
 poll_to_user: dict[str, int] = {}
 group_sessions: dict[int, dict] = {}
 poll_to_chat: dict[str, int] = {}
 
+
 def _build_prompt(topic: str, count: int, style: str = "quiz") -> str:
     pyq_hint = (
         " Model the questions after Indian competitive exam PYQ style "
         "(NEET/JEE), focusing on conceptual depth."
-        if style == "pyq" else ""
+        if style == "pyq"
+        else ""
     )
-    return textwrap.dedent(f"""
+    return textwrap.dedent(
+        f"""
         Generate exactly {count} multiple-choice questions about: "{topic}".{pyq_hint}
 
         MANDATORY RULES:
@@ -144,7 +236,9 @@ def _build_prompt(topic: str, count: int, style: str = "quiz") -> str:
             "correct_index": 0
           }}
         ]
-    """).strip()
+    """
+    ).strip()
+
 
 def _safe_parse_json(text: str) -> list:
     if not text:
@@ -157,7 +251,8 @@ def _safe_parse_json(text: str) -> list:
     end = text.rfind("]")
     if start == -1 or end == -1 or end <= start:
         raise ValueError(f"No JSON array found. Response: {text[:200]!r}")
-    return json.loads(text[start:end + 1])
+    return json.loads(text[start : end + 1])
+
 
 def _validate(raw: list, needed: int) -> list[dict]:
     valid: list[dict] = []
@@ -175,14 +270,17 @@ def _validate(raw: list, needed: int) -> list[dict]:
             continue
         if cidx not in (0, 1, 2, 3):
             continue
-        valid.append({
-            "question": str(q["question"]).strip(),
-            "options": [str(o).strip() for o in opts],
-            "correct_index": cidx,
-        })
+        valid.append(
+            {
+                "question": str(q["question"]).strip(),
+                "options": [str(o).strip() for o in opts],
+                "correct_index": cidx,
+            }
+        )
         if len(valid) >= needed:
             break
     return valid
+
 
 def _sync_generate(slot: ModelSlot, prompt: str, key_index: int = 0) -> str:
     client = _get_client(slot.api_version, key_index)
@@ -196,11 +294,14 @@ def _sync_generate(slot: ModelSlot, prompt: str, key_index: int = 0) -> str:
     )
     return resp.text or ""
 
+
 async def generate_questions(topic: str, count: int, style: str = "quiz") -> list[dict]:
     global _working_slot
     keys = _api_keys()
     if not keys:
-        raise RuntimeError("No Gemini API key is configured. Set GEMINI_API_KEY and/or GEMINI_API_KEY_2.")
+        raise RuntimeError(
+            "No Gemini API key is configured. Set GEMINI_API_KEY and/or GEMINI_API_KEY_2."
+        )
 
     slots = [_working_slot] + [s for s in CANDIDATE_SLOTS if s != _working_slot]
     accumulated: list[dict] = []
@@ -232,8 +333,13 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
                         break
                     except Exception as exc:
                         msg = str(exc)
-                        errors.append(f"[key {key_index + 1}] [{slot.model}] retry={retry + 1}: {msg[:180]}")
-                        if any(x in msg for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")):
+                        errors.append(
+                            f"[key {key_index + 1}] [{slot.model}] retry={retry + 1}: {msg[:180]}"
+                        )
+                        if any(
+                            x in msg
+                            for x in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")
+                        ):
                             await asyncio.sleep(min(3 + retry * 3, 8))
                         else:
                             await asyncio.sleep(0.5)
@@ -274,7 +380,14 @@ async def generate_questions(topic: str, count: int, style: str = "quiz") -> lis
     return accumulated[:count]
 
 
-def start_session(user_id: int, chat_id: int, questions: list[dict], topic: str, style: str = "quiz", timer: int = POLL_OPEN_PERIOD) -> dict:
+def start_session(
+    user_id: int,
+    chat_id: int,
+    questions: list[dict],
+    topic: str,
+    style: str = "quiz",
+    timer: int = POLL_OPEN_PERIOD,
+) -> dict:
     old = active_sessions.pop(user_id, None)
     if old and old.get("advance_job") and not old["advance_job"].done():
         old["advance_job"].cancel()
@@ -301,6 +414,7 @@ def start_session(user_id: int, chat_id: int, questions: list[dict], topic: str,
     }
     active_sessions[user_id] = session
     return session
+
 
 async def send_question(bot: Bot, session: dict):
     idx = session["current_idx"]
@@ -331,6 +445,7 @@ async def send_question(bot: Bot, session: dict):
     except TelegramError as exc:
         logger.error("Poll send failed: %s", exc)
 
+
 async def _advance_after_timeout(bot: Bot, user_id: int, question_index: int):
     session = active_sessions.get(user_id)
     timer = session.get("timer", POLL_OPEN_PERIOD) if session else POLL_OPEN_PERIOD
@@ -345,6 +460,7 @@ async def _advance_after_timeout(bot: Bot, user_id: int, question_index: int):
 
     await _next_or_finish(bot, session)
 
+
 async def _next_or_finish(bot: Bot, session: dict):
     session["current_idx"] += 1
     user_id = session["user_id"]
@@ -352,8 +468,11 @@ async def _next_or_finish(bot: Bot, session: dict):
         await finish_quiz(bot, session)
     else:
         await send_question(bot, session)
-        task = asyncio.create_task(_advance_after_timeout(bot, user_id, session["current_idx"]))
+        task = asyncio.create_task(
+            _advance_after_timeout(bot, user_id, session["current_idx"])
+        )
         session["advance_job"] = task
+
 
 async def handle_poll_answer(
     bot: Bot,
@@ -392,6 +511,7 @@ async def handle_poll_answer(
         )
     except Exception as exc:
         logger.warning("Supabase record_answer failed: %s", str(exc)[:200])
+
 
 async def finish_quiz(bot: Bot, session: dict):
     user_id = session["user_id"]
@@ -437,7 +557,7 @@ async def finish_quiz(bot: Bot, session: dict):
         logger.error("Result card failed: %s", exc)
 
 
-# Group quiz functions (unchanged from your current flow)
+# Group quiz functions
 
 def start_group_session(chat_id: int, questions: list[dict], topic: str, timer: int) -> dict:
     old = group_sessions.pop(chat_id, None)
@@ -461,6 +581,7 @@ def start_group_session(chat_id: int, questions: list[dict], topic: str, timer: 
     }
     group_sessions[chat_id] = session
     return session
+
 
 async def send_group_question(bot: Bot, session: dict):
     idx = session["current_idx"]
@@ -490,7 +611,16 @@ async def send_group_question(bot: Bot, session: dict):
     except TelegramError as exc:
         logger.error("Group poll send failed: %s", exc)
 
-async def handle_group_poll_answer(bot: Bot, chat_id: int, user_id: int, name: str, username: str, poll_id: str, selected_option: int):
+
+async def handle_group_poll_answer(
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    name: str,
+    username: str,
+    poll_id: str,
+    selected_option: int,
+):
     session = group_sessions.get(chat_id)
     if not session or session.get("current_poll_id") != poll_id:
         return
@@ -499,7 +629,13 @@ async def handle_group_poll_answer(bot: Bot, chat_id: int, user_id: int, name: s
     session["answered_users"].add(user_id)
     ensure_user(user_id, chat_id, username, name)
     if user_id not in session["user_scores"]:
-        session["user_scores"][user_id] = {"name": name, "username": username, "correct": 0, "wrong": 0, "score": 0}
+        session["user_scores"][user_id] = {
+            "name": name,
+            "username": username,
+            "correct": 0,
+            "wrong": 0,
+            "score": 0,
+        }
 
     stats = session["user_scores"][user_id]
     is_correct = selected_option == session["current_correct"]
@@ -524,6 +660,7 @@ async def handle_group_poll_answer(bot: Bot, chat_id: int, user_id: int, name: s
     except Exception as exc:
         logger.warning("Supabase record_answer (group) failed: %s", str(exc)[:200])
 
+
 async def _advance_group_after_timeout(bot: Bot, chat_id: int, question_index: int):
     session = group_sessions.get(chat_id)
     timer = session.get("timer", POLL_OPEN_PERIOD) if session else POLL_OPEN_PERIOD
@@ -534,6 +671,7 @@ async def _advance_group_after_timeout(bot: Bot, chat_id: int, question_index: i
         return
     await _next_or_finish_group(bot, session)
 
+
 async def _next_or_finish_group(bot: Bot, session: dict):
     session["current_idx"] += 1
     chat_id = session["chat_id"]
@@ -541,8 +679,11 @@ async def _next_or_finish_group(bot: Bot, session: dict):
         await finish_group_quiz(bot, session)
     else:
         await send_group_question(bot, session)
-        task = asyncio.create_task(_advance_group_after_timeout(bot, chat_id, session["current_idx"]))
+        task = asyncio.create_task(
+            _advance_group_after_timeout(bot, chat_id, session["current_idx"])
+        )
         session["advance_job"] = task
+
 
 async def finish_group_quiz(bot: Bot, session: dict):
     chat_id = session["chat_id"]
@@ -554,26 +695,44 @@ async def finish_group_quiz(bot: Bot, session: dict):
         ensure_user(user_id, chat_id, stats["username"], stats["name"])
         unanswered = total - stats["correct"] - stats["wrong"]
         save_quiz_result(
-            user_id=user_id, chat_id=chat_id,
-            correct=stats["correct"], wrong=stats["wrong"],
-            unanswered=unanswered, score=stats["score"],
-            topic=session["topic"], total=total,
+            user_id=user_id,
+            chat_id=chat_id,
+            correct=stats["correct"],
+            wrong=stats[["wrong"]] if isinstance(stats.get("wrong"), int) else stats["wrong"],
+            unanswered=unanswered,
+            score=stats["score"],
+            topic=session["topic"],
+            total=total,
         )
 
     if session["user_scores"]:
-        sorted_users = sorted(session["user_scores"].items(), key=lambda x: x[1]["score"], reverse=True)
+        sorted_users = sorted(
+            session["user_scores"].items(), key=lambda x: x[1]["score"], reverse=True
+        )
         medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-        lines = [f"📅 *Daily Quiz Complete!*\n", f"📖 Topic: *{session['topic']}* | Questions: `{total}`", "━━━━━━━━━━━━━━━━━━"]
+        lines = [
+            "📅 *Daily Quiz Complete!*\n",
+            f"📖 Topic: *{session['topic']}* | Questions: `{total}`",
+            "━━━━━━━━━━━━━━━━━━",
+        ]
         for i, (uid, s) in enumerate(sorted_users[:10]):
             medal = medals.get(i, f"{i + 1}.")
             dname = s["name"] or s["username"] or "User"
-            lines.append(f"{medal} *{dname}* — `{s['score']:+}` (✅{s['correct']} ❌{s['wrong']})")
+            lines.append(
+                f"{medal} *{dname}* — `{s['score']:+}` (✅{s['correct']} ❌{s['wrong']})"
+            )
         lines.append("━━━━━━━━━━━━━━━━━━")
     else:
-        lines = [f"📅 *Daily Quiz Complete!*\n", f"📖 Topic: *{session['topic']}*", "\n_No one answered this quiz._"]
+        lines = [
+            "📅 *Daily Quiz Complete!*\n",
+            f"📖 Topic: *{session['topic']}*",
+            "\n_No one answered this quiz._",
+        ]
 
     try:
-        await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        await bot.send_message(
+            chat_id=chat_id, text="\n".join(lines), parse_mode=ParseMode.MARKDOWN
+        )
     except TelegramError as exc:
         logger.error("Group result card failed: %s", exc)
 
