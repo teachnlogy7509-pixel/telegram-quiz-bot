@@ -24,6 +24,8 @@ import quiz as quiz_module
 import vip_question_engine
 import persistent_scores
 import app_update_notifier
+import vip_commands
+import vip_scheduler
 import scheduler as sched_module
 import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
@@ -43,6 +45,7 @@ ADMIN_IDS = [8043570403]
 vip_question_engine.install(quiz_module)
 # Supabase is the score source of truth; SQLite remains an offline fallback.
 persistent_scores.install(db, leaderboard, quiz_module)
+vip_commands.install(quiz_module)
 
 # ADMIN CONTROL MIDDLEWARE
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -359,6 +362,7 @@ HELP_TEXT = """
 📚 Quiz & Study:
 /quiz <topic> <number> — Quiz शुरू करें
 /pyq <topic> <number> — PYQ-style quiz
+/proquiz <topic> <number> — Ultra-level NCERT/PYQ/Assertion quiz
 /pdfquiz <PDF name> <number> — PDF से quiz
 /timer <15|30|45|60> — Quiz timer
 /qtypes — VIP question formats और anti-repeat status
@@ -378,7 +382,9 @@ HELP_TEXT = """
 📅 Daily Quiz:
 /schedule <topic> <number> — रोज 9 PM quiz
 /scheduleoff — Daily schedule बंद करें
-/schedulelist — Current schedule देखें
+/schedulelist — सभी schedules देखें
+/scheduleoff <id|all> — schedule हटाएँ
+/schedulereset — सभी schedules reset
 
 📁 PDF Library:
 /addfile — PDF/Document save करें
@@ -762,7 +768,7 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
 async def _post_init(application: Application):
-    sched_module.init_scheduler(application)
+    vip_scheduler.init_scheduler(application)
     app_update_notifier.init(application)
 
 
@@ -833,15 +839,17 @@ def main():
     app.add_handler(CommandHandler("testupdate", cmd_testupdate))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("pyq", cmd_pyq))
+    app.add_handler(CommandHandler("proquiz", lambda u,c: vip_commands.cmd_proquiz(u,c,quiz_module,db)))
     app.add_handler(CommandHandler("pdfquiz", cmd_pdfquiz))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("myrank", cmd_myrank))
     app.add_handler(CommandHandler("toptoday", cmd_toptoday))
     app.add_handler(CommandHandler("resetscore", cmd_resetscore))
     app.add_handler(CommandHandler("timer", cmd_timer))
-    app.add_handler(CommandHandler("schedule", cmd_schedule))
-    app.add_handler(CommandHandler("scheduleoff", cmd_scheduleoff))
-    app.add_handler(CommandHandler("schedulelist", cmd_schedulelist))
+    app.add_handler(CommandHandler("schedule", vip_scheduler.cmd_schedule))
+    app.add_handler(CommandHandler("scheduleoff", vip_scheduler.cmd_scheduleoff))
+    app.add_handler(CommandHandler("schedulelist", vip_scheduler.cmd_schedulelist))
+    app.add_handler(CommandHandler("schedulereset", vip_scheduler.cmd_schedulereset))
 
 
     # Fun handlers
