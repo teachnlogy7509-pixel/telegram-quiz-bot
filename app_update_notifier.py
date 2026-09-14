@@ -31,12 +31,12 @@ def _json(url: str):
 
 
 def _latest_release_commit() -> dict | None:
-    rows = _json(f"https://api.github.com/repos/{REPO}/commits?path=releases&per_page=1")
+    rows = _json("https://api.github.com/repos/" + REPO + "/commits?path=releases&per_page=1")
     if not rows:
         return None
     row = rows[0]
     sha = row.get("sha") or ""
-    detail = _json(f"https://api.github.com/repos/{REPO}/commits/{sha}")
+    detail = _json("https://api.github.com/repos/" + REPO + "/commits/" + sha)
     apk = next((f for f in detail.get("files", []) if str(f.get("filename", "")).lower().endswith(".apk")), None)
     if not apk:
         return None
@@ -45,8 +45,8 @@ def _latest_release_commit() -> dict | None:
         "sha": sha,
         "message": str(row.get("commit", {}).get("message") or "RATHOD HUB update").splitlines()[0],
         "path": path,
-        "download": f"https://raw.githubusercontent.com/{REPO}/main/{path}",
-        "commit": row.get("html_url") or f"https://github.com/{REPO}/commit/{sha}",
+        "download": "https://raw.githubusercontent.com/" + REPO + "/main/" + path,
+        "commit": row.get("html_url") or ("https://github.com/" + REPO + "/commit/" + sha),
     }
 
 
