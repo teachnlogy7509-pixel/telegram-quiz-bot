@@ -21,6 +21,7 @@ import config
 import database as db
 import leaderboard
 import quiz as quiz_module
+import vip_question_engine
 import scheduler as sched_module
 import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
@@ -35,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 # Admin Settings
 ADMIN_IDS = [8043570403]
+
+# Upgrade every /quiz, /pyq, scheduled and PDF quiz with persistent anti-repeat memory.
+vip_question_engine.install(quiz_module)
 
 # ADMIN CONTROL MIDDLEWARE
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -66,6 +70,30 @@ async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except Exception:
             logger.exception("Failed to send bot-paused notice")
     return False
+
+
+
+async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the exact Telegram chat ID needed for Railway update announcements."""
+    if not await check_bot_active(update, context):
+        return
+    await update.message.reply_text(f"🆔 Chat ID: `{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_qtypes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context):
+        return
+    await update.message.reply_text(
+        "👑 *RATHOD VIP Question Engine*\n\n"
+        "✅ NCERT fact & conceptual\n"
+        "✅ Statement I/II & Assertion–Reason\n"
+        "✅ Correct/incorrect combinations\n"
+        "✅ Match, sequence, case & application\n"
+        "✅ Numerical/data/PYQ-inspired traps\n"
+        "✅ Persistent exact + near-duplicate blocking\n\n"
+        "Use `/quiz <topic> <number>` or `/pyq <topic> <number>`.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     err = context.error
@@ -311,6 +339,8 @@ HELP_TEXT = """
 /pyq <topic> <number> — PYQ-style quiz
 /pdfquiz <PDF name> <number> — PDF से quiz
 /timer <15|30|45|60> — Quiz timer
+/qtypes — VIP question formats और anti-repeat status
+/chatid — Current group Chat ID
 
 🔗 Account Link:
 /link CODE — Rathod Hub account link
@@ -774,6 +804,8 @@ def main():
     # Core & Quiz Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("qtypes", cmd_qtypes))
+    app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("pyq", cmd_pyq))
     app.add_handler(CommandHandler("pdfquiz", cmd_pdfquiz))
