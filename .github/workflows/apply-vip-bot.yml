@@ -1,9 +1,20 @@
 name: Apply RATHOD VIP Bot Upgrade
+
 on:
   workflow_dispatch:
   push:
-    paths: ['vip_question_engine.py','persistent_scores.py','app_update_notifier.py','vip_commands.py','vip_scheduler.py','apply_vip_bot.py','.github/workflows/apply-vip-bot.yml']
-permissions:{contents: write}
+    paths:
+      - 'vip_question_engine.py'
+      - 'persistent_scores.py'
+      - 'app_update_notifier.py'
+      - 'vip_commands.py'
+      - 'vip_scheduler.py'
+      - 'apply_vip_bot.py'
+      - '.github/workflows/apply-vip-bot.yml'
+
+permissions:
+  contents: write
+
 jobs:
   upgrade:
     runs-on: ubuntu-latest
