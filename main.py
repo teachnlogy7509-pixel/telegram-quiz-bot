@@ -26,6 +26,7 @@ import persistent_scores
 import app_update_notifier
 import vip_commands
 import vip_scheduler
+import multi_provider
 import scheduler as sched_module
 import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 ADMIN_IDS = [8043570403]
 
 # Upgrade every /quiz, /pyq, scheduled and PDF quiz with persistent anti-repeat memory.
+multi_provider.install(quiz_module)
 vip_question_engine.install(quiz_module)
 # Supabase is the score source of truth; SQLite remains an offline fallback.
 persistent_scores.install(db, leaderboard, quiz_module)
@@ -363,6 +365,7 @@ HELP_TEXT = """
 /quiz <topic> <number> — Quiz शुरू करें
 /pyq <topic> <number> — PYQ-style quiz
 /proquiz <topic> <number> — Ultra-level NCERT/PYQ/Assertion quiz
+/aistatus — Gemini/Groq/OpenRouter fallback status
 /pdfquiz <PDF name> <number> — PDF से quiz
 /timer <15|30|45|60> — Quiz timer
 /qtypes — VIP question formats और anti-repeat status
@@ -840,6 +843,7 @@ def main():
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("pyq", cmd_pyq))
     app.add_handler(CommandHandler("proquiz", lambda u,c: vip_commands.cmd_proquiz(u,c,quiz_module,db)))
+    app.add_handler(CommandHandler("aistatus", multi_provider.cmd_aistatus))
     app.add_handler(CommandHandler("pdfquiz", cmd_pdfquiz))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("myrank", cmd_myrank))
