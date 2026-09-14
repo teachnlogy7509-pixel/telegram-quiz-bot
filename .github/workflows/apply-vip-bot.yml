@@ -1,0 +1,33 @@
+name: Apply RATHOD VIP Bot Upgrade
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'vip_question_engine.py'
+      - 'apply_vip_bot.py'
+      - '.github/workflows/apply-vip-bot.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wire VIP engine and validate Python
+        run: |
+          python apply_vip_bot.py
+          python -m py_compile main.py quiz.py vip_question_engine.py apply_vip_bot.py
+          grep -q 'vip_question_engine.install' main.py
+          grep -q 'CommandHandler("qtypes"' main.py
+          grep -q 'CommandHandler("chatid"' main.py
+      - name: Commit generated wiring
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.py vip_question_engine.py apply_vip_bot.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Wire VIP anti-repeat engine into Telegram bot [skip ci]"
+          git push
