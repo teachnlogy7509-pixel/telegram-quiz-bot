@@ -9,6 +9,7 @@ on:
       - 'app_update_notifier.py'
       - 'vip_commands.py'
       - 'vip_scheduler.py'
+      - 'multi_provider.py'
       - 'apply_vip_bot.py'
       - '.github/workflows/apply-vip-bot.yml'
 
@@ -23,16 +24,17 @@ jobs:
       - name: Wire and validate all VIP modules
         run: |
           python apply_vip_bot.py
-          python -m py_compile main.py quiz.py vip_question_engine.py persistent_scores.py app_update_notifier.py vip_commands.py vip_scheduler.py apply_vip_bot.py
+          python -m py_compile main.py quiz.py vip_question_engine.py persistent_scores.py app_update_notifier.py vip_commands.py vip_scheduler.py multi_provider.py apply_vip_bot.py
+          grep -q 'multi_provider.install' main.py
           grep -q 'vip_commands.install' main.py
           grep -q 'vip_scheduler.init_scheduler' main.py
           grep -q 'CommandHandler("proquiz"' main.py
-          grep -q 'CommandHandler("schedulereset"' main.py
+          grep -q 'CommandHandler("aistatus"' main.py
       - name: Commit generated wiring
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add main.py *.py
           git diff --cached --quiet && exit 0
-          git commit -m "Wire PRO quiz and multi-schedule Telegram upgrade [skip ci]"
+          git commit -m "Wire Gemini Groq OpenRouter fallback [skip ci]"
           git push
