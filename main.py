@@ -22,6 +22,7 @@ import database as db
 import leaderboard
 import quiz as quiz_module
 import vip_question_engine
+import persistent_scores
 import scheduler as sched_module
 import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
@@ -39,6 +40,8 @@ ADMIN_IDS = [8043570403]
 
 # Upgrade every /quiz, /pyq, scheduled and PDF quiz with persistent anti-repeat memory.
 vip_question_engine.install(quiz_module)
+# Supabase is the score source of truth; SQLite remains an offline fallback.
+persistent_scores.install(db, leaderboard, quiz_module)
 
 # ADMIN CONTROL MIDDLEWARE
 async def check_bot_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
