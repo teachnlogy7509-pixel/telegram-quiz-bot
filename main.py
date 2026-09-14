@@ -23,6 +23,7 @@ import leaderboard
 import quiz as quiz_module
 import vip_question_engine
 import persistent_scores
+import app_update_notifier
 import scheduler as sched_module
 import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
@@ -81,6 +82,24 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context):
         return
     await update.message.reply_text(f"🆔 Chat ID: `{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
+
+
+
+
+async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context):
+        return
+    await update.message.reply_text(f"🆔 Chat ID: `{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_testupdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    try:
+        sent = await app_update_notifier.check_once(context.bot, force=True, test=True)
+        await update.message.reply_text("✅ Test update notification group में भेज दिया।" if sent else "❌ APP_UPDATE_CHAT_ID missing/invalid या GitHub APK नहीं मिला।")
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Test notification failed: {str(exc)[:250]}")
 
 
 async def cmd_qtypes(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,6 +363,7 @@ HELP_TEXT = """
 /timer <15|30|45|60> — Quiz timer
 /qtypes — VIP question formats और anti-repeat status
 /chatid — Current group Chat ID
+/testupdate — Admin notification test
 
 🔗 Account Link:
 /link CODE — Rathod Hub account link
@@ -743,6 +763,7 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _post_init(application: Application):
     sched_module.init_scheduler(application)
+    app_update_notifier.init(application)
 
 
 
@@ -809,6 +830,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("qtypes", cmd_qtypes))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
+    app.add_handler(CommandHandler("testupdate", cmd_testupdate))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("pyq", cmd_pyq))
     app.add_handler(CommandHandler("pdfquiz", cmd_pdfquiz))
