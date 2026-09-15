@@ -48,6 +48,8 @@ MOTIVATION_LINES = [
 ]
 _last_motivation = 0.0
 _last_line = ""
+_score_baseline: dict[str, int] | None = None
+_score_changed_at: float | None = None
 
 
 def _headers() -> dict[str, str]:
@@ -115,6 +117,14 @@ def _fetch_pending(mode: str, cutoff: datetime | None = None) -> list[dict]:
     return _rest("GET", "rh_bridge_events", params) or []
 
 
+def _fetch_scores() -> list[dict]:
+    return _rest(
+        "GET",
+        "telegram_quiz_scores",
+        {"select": "telegram_user_id,telegram_name,total_xp,updated_at", "order": "total_xp.desc", "limit": "50"},
+    ) or []
+
+
 def _mark(ids: list[int], label: str) -> None:
     if not ids:
         return
@@ -156,6 +166,44 @@ def _digest(rows: list[dict]) -> str:
     )
 
 
+def _score_signature(rows: list[dict]) -> dict[str, int]:
+    return {str(row.get("telegram_user_id")): int(row.get("total_xp", 0) or 0) for row in rows if row.get("telegram_user_id") is not None}
+
+
+def _score_message(rows: list[dict]) -> str:
+    top = rows[:5]
+    lines = []
+    for index, row in enumerate(top, 1):
+        medal = ["🥇", "🥈", "🥉"][index - 1] if index <= 3 else f"{index}."
+        name = html.escape(_safe_name(row.get("telegram_name") or f"Aspirant {row.get('telegram_user_id')}"))
+        lines.append(f"{medal} {name} — <b>{int(row.get('total_xp', 0) or 0)} XP</b>")
+    return (
+        f"🎯 <b>Telegram Quiz Score Update</b>\n\n"
+        f"Latest score ko approximately {SCORE_DELAY_MINUTES} minutes delay ke baad share kiya gaya hai ⏰\n\n"
+        + ("\n".join(lines) if lines else "Abhi score board ready ho raha hai 😊")
+        + "\n\n👏 Padhte raho, leaderboard kabhi bhi change ho sakta hai 🔥📚"
+    )
+
+
+async def _process_score_digest(application: Application) -> None:
+    global _score_baseline, _score_changed_at
+    rows = await asyncio.to_thread(_fetch_scores)
+    current = _score_signature(rows)
+    now = time.time()
+    if _score_baseline is None:
+        _score_baseline = current
+        return
+    if current != _score_baseline:
+        if _score_changed_at is None:
+            _score_changed_at = now
+        if now - _score_changed_at >= SCORE_DELAY_MINUTES * 60:
+            if await _send(_score_message(rows), application.bot):
+                _score_baseline = current
+                _score_changed_at = None
+    else:
+        _score_changed_at = None
+
+
 async def _process_events(application: Application) -> None:
     if not SUPABASE_URL or not SUPABASE_KEY or not GROUP_CHAT_ID:
         return
@@ -179,6 +227,7 @@ async def _process_events(application: Application) -> None:
 async def _poll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await _process_events(context.application)
+        await _process_score_digest(context.application)
     except Exception:
         logger.exception("Bridge polling failed")
 
