@@ -28,8 +28,8 @@ GROUP_ID = (os.getenv("BRIDGE_GROUP_CHAT_ID") or os.getenv("APP_UPDATE_CHAT_ID")
 SUPA_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPA_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 POLL_SECONDS = max(30, int(os.getenv("BRIDGE_POLL_SECONDS", "60")))
-# 480 minutes = at most 3 motivation messages per day. 720 gives about 2/day.
-MOTIVATION_MINUTES = max(480, int(os.getenv("BRIDGE_MOTIVATION_MINUTES", "480")))
+# Sakhi motivation is intentionally limited to one message during the noon hour.
+MOTIVATION_HOUR = max(0, min(23, int(os.getenv("BRIDGE_MOTIVATION_HOUR", "12"))))
 SCORE_DELAY = max(30, int(os.getenv("BRIDGE_SCORE_DELAY_MINUTES", "30")))
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
@@ -37,6 +37,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+IST = timezone(timedelta(hours=5, minutes=30))
 
 MOTIVATION_LINES = [
     "📚 Chhoti progress bhi progress hoti hai. Ek chapter, ek quiz, ek step 💙",
@@ -45,9 +46,8 @@ MOTIVATION_LINES = [
     "💙 Perfect hona zaroori nahi; aaj kal se thoda better hona zaroori hai 📖",
     "🌸 Chalo sirf 15 minute start karte hain. Motivation raste me aa jayegi 😊",
 ]
-# Do not send immediately after a Railway restart.
-last_motivation = time.time()
 last_line = ""
+last_motivation_day = ""
 last_reaction = 0.0
 score_snapshot: dict[str, int] | None = None
 score_changed_at: float | None = None
@@ -59,7 +59,7 @@ def rest(method: str, table: str, params: dict[str, str] | None = None, body: ob
     url = f"{SUPA_URL}/rest/v1/{table}"
     if params:
         url += "?" + parse.urlencode(params)
-    headers = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+    headers = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json", "Accept": "application/json", "Prefer": "return=minimal"}
     data = None if body is None else json.dumps(body).encode()
     with request.urlopen(request.Request(url, data=data, headers=headers, method=method), timeout=20) as response:
         raw = response.read().decode()
@@ -163,7 +163,6 @@ async def maybe_react(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if message.from_user and message.from_user.is_bot:
         return
-    # A light reaction at most once every 90 seconds, not on every message.
     if time.time() - last_reaction < 90 or random.random() > 0.35:
         return
     try:
@@ -202,7 +201,7 @@ def event_digest(rows: list[dict]) -> str:
     top = sorted(users.items(), key=lambda x: (-x[1], x[0]))[:5]
     lines = "\n".join(f"{i}. {html.escape(n)} — {c} solved" for i, (n, c) in enumerate(top, 1))
     mode_text = " • ".join(f"{html.escape(k)}: {v}" for k, v in sorted(modes.items()))
-    return (f"⏰ <b>RATHOD Study Update</b>\n\n📚 Last {SCORE_DELAY} min me <b>{len(rows)}</b> questions solve hue\n"
+    return (f"⏰ <b>RATHOD Study Update</b>\n\n📚 Last 30 min me <b>{len(rows)}</b> questions solve hue\n"
             f"✅ Correct: <b>{correct}</b>\n⚡ XP: <b>+{xp}</b>\n🎯 Modes: {mode_text or 'Study Practice'}\n\n"
             f"<b>Active learners</b>\n{lines or 'Aaj ki pehli study entry ka wait hai 😊'}\n\nSmall steps bhi NEET dream ke paas le jaate hain 💙📖")
 
@@ -220,7 +219,7 @@ def score_text(rows: list[dict]) -> str:
     for i, row in enumerate(rows[:5], 1):
         medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
         lines.append(f"{medal} {html.escape(safe_name(row.get('telegram_name')))} — <b>{int(row.get('total_xp', 0) or 0)} XP</b>")
-    return f"🎯 <b>Telegram Quiz Score Update</b>\n\nScore approximately {SCORE_DELAY} minutes delay ke baad share kiya gaya hai ⏰\n\n" + ("\n".join(lines) or "Abhi score board ready ho raha hai 😊") + "\n\n👏 Padhte raho 🔥📚"
+    return f"🎯 <b>Telegram Quiz Score Update</b>\n\nScore approximately 30 minutes delay ke baad share kiya gaya hai ⏰\n\n" + ("\n".join(lines) or "Abhi score board ready ho raha hai 😊") + "\n\n👏 Padhte raho 🔥📚"
 
 
 async def process_scores(app: Application) -> None:
@@ -248,6 +247,22 @@ async def process_events(app: Application) -> None:
         await asyncio.to_thread(mark, [int(x["id"]) for x in rows], "30-minute-digest")
 
 
+async def motivation_already_sent(day: str) -> bool:
+    try:
+        rows = await asyncio.to_thread(rest, "GET", "rh_bridge_events", {"select": "id", "event_type": "eq.sakhi_motivation", "created_at": f"gte.{day}T00:00:00+05:30", "limit": "1"})
+        return bool(rows)
+    except Exception as exc:
+        log.warning("Could not check Sakhi motivation state: %s", str(exc)[:150])
+        return False
+
+
+async def remember_motivation(day: str) -> None:
+    try:
+        await asyncio.to_thread(rest, "POST", "rh_bridge_events", body={"event_type": "sakhi_motivation", "delivery_mode": "direct", "display_name": BOT_NAME, "payload": {"kind": "daily_noon_motivation", "day": day}})
+    except Exception as exc:
+        log.warning("Could not save Sakhi motivation state: %s", str(exc)[:150])
+
+
 async def poll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await process_events(context.application); await process_scores(context.application)
@@ -256,12 +271,17 @@ async def poll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def motivation_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    global last_motivation, last_line
-    if time.time() - last_motivation < MOTIVATION_MINUTES * 60:
+    global last_line, last_motivation_day
+    local = datetime.now(IST)
+    day = local.date().isoformat()
+    if local.hour != MOTIVATION_HOUR or last_motivation_day == day:
+        return
+    if await motivation_already_sent(day):
+        last_motivation_day = day
         return
     choices = [x for x in MOTIVATION_LINES if x != last_line] or MOTIVATION_LINES; line = random.choice(choices)
-    if await send_group(f"💌 <b>{BOT_NAME}</b> ki reminder\n\n{html.escape(line)}\n\n<i>{BOT_BYLINE}</i>", context.application.bot):
-        last_line = line; last_motivation = time.time()
+    if await send_group(f"💌 <b>{BOT_NAME}</b> ki daily reminder\n\n{html.escape(line)}\n\n<i>{BOT_BYLINE}</i>", context.application.bot):
+        last_line = line; last_motivation_day = day; await remember_motivation(day)
 
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -269,7 +289,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def bridgehelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
 
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -326,7 +346,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, group_activity))
-    log.info("%s started; OpenRouter=%s Gemini=%s Groq=%s; motivation cooldown=%sm", BOT_NAME, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY), MOTIVATION_MINUTES)
+    log.info("%s started; OpenRouter=%s Gemini=%s Groq=%s; daily motivation=%02d:00 IST", BOT_NAME, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY), MOTIVATION_HOUR)
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
