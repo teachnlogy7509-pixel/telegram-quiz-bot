@@ -5,4 +5,4 @@ nixPkgs = ["ffmpeg", "python311"]
 cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt"]
 
 [start]
-cmd = "python patch_bot.py && python -m py_compile main.py quiz.py config.py supabase_sync.py && python main.py"
+cmd = "python patch_bot.py && python archive_patch.py && python -m py_compile main.py quiz.py config.py supabase_sync.py archive_sync.py question_archive_worker.py && python main.py"
