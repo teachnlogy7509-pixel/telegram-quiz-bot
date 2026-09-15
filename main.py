@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                         MessageHandler, PollAnswerHandler, filters, ConversationHandler)
+                         MessageHandler, PollAnswerHandler, filters, ConversationHandler, CallbackQueryHandler)
 
 import config
 import database as db
@@ -27,6 +27,7 @@ import app_update_notifier
 import vip_commands
 import vip_scheduler
 import multi_provider
+import premium_hub
 import scheduler as sched_module
 import supabase_sync
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
@@ -360,6 +361,13 @@ HELP_TEXT = """
 ⚙️ Admin Controls:
 /on — Bot ON
 /off — Bot OFF
+
+👑 Premium:
+/hub — Premium command center
+/profile — VIP profile card
+/dailychallenge — Daily 10Q challenge
+/focuspro <minutes> — Focus timer
+/focusstop — Stop focus
 
 📚 Quiz & Study:
 /quiz <topic> <number> — Quiz शुरू करें
@@ -773,6 +781,7 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _post_init(application: Application):
     vip_scheduler.init_scheduler(application)
     app_update_notifier.init(application)
+    await premium_hub.init_commands(application)
 
 
 
@@ -844,6 +853,13 @@ def main():
     app.add_handler(CommandHandler("pyq", cmd_pyq))
     app.add_handler(CommandHandler("proquiz", lambda u,c: vip_commands.cmd_proquiz(u,c,quiz_module,db)))
     app.add_handler(CommandHandler("aistatus", multi_provider.cmd_aistatus))
+    app.add_handler(CommandHandler("hub", lambda u,c: premium_hub.cmd_hub(u,c,db,leaderboard)))
+    app.add_handler(CommandHandler("premium", lambda u,c: premium_hub.cmd_hub(u,c,db,leaderboard)))
+    app.add_handler(CommandHandler("profile", lambda u,c: premium_hub.cmd_profile(u,c,db,leaderboard)))
+    app.add_handler(CommandHandler("dailychallenge", lambda u,c: premium_hub.cmd_dailychallenge(u,c,quiz_module,db,vip_commands)))
+    app.add_handler(CommandHandler("focuspro", premium_hub.cmd_focuspro))
+    app.add_handler(CommandHandler("focusstop", premium_hub.cmd_focusstop))
+    app.add_handler(CallbackQueryHandler(lambda u,c: premium_hub.handle_button(u,c,db,leaderboard,quiz_module),pattern="^rh_"))
     app.add_handler(CommandHandler("pdfquiz", cmd_pdfquiz))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("myrank", cmd_myrank))
