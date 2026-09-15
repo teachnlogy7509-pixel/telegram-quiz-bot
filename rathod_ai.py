@@ -34,18 +34,6 @@ active feature and must not be suggested.
 """.strip()
 
 
-def _is_active(update, db_module) -> bool:
-    chat = update.effective_chat
-    if not chat or db_module.is_bot_active(chat.id):
-        return True
-    if update.effective_message:
-        awaitable = update.effective_message.reply_text(
-            "⏸️ Bot अभी इस chat में PAUSED है। Admin `/on` भेजकर इसे चालू कर सकता है।"
-        )
-        return awaitable
-    return False
-
-
 def _admin(update, admin_ids) -> bool:
     user = update.effective_user
     return bool(user and int(user.id) in {int(x) for x in admin_ids})
@@ -280,4 +268,4 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
         BotCommand("notify", "Admin group notification"),
         BotCommand("coupon", "Admin coupon announcement"),
     ]
-    await application.bot.set_my_commands(existing + [x for x in additions if x.command not in known])
+    await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
