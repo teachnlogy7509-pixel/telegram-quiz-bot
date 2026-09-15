@@ -29,3 +29,6 @@ def confirm_link(code: str, telegram_user_id: int, username: str, name: str) -> 
 
 def record_answer(telegram_user_id: int, chat_id: int, username: str, name: str, is_correct: bool, topic: str) -> dict:
     return _rpc("record_telegram_quiz_answer", {"p_telegram_user_id": int(telegram_user_id), "p_chat_id": int(chat_id), "p_username": username or "", "p_name": name or "Telegram User", "p_is_correct": bool(is_correct), "p_topic": (topic or "Quiz")[:250]})
+
+def grant_bonus_xp(target: str, amount: int, reason: str, admin_telegram_user_id: int) -> dict:
+    return _rpc("admin_grant_bonus_xp", {"p_target": (target or "").strip(), "p_amount": int(amount), "p_reason": (reason or "").strip()[:300], "p_admin_telegram_user_id": int(admin_telegram_user_id)})
