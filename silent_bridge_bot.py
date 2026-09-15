@@ -1,19 +1,35 @@
 """RATHOD SAKHI bridge wrapper.
 
-Keeps the existing bridge_bot features and app notifications, but disables
-automatic learner quiz/score broadcasts that list students. Admin-created app
-notifications stored as immediate events are still delivered to the group.
-Admins can send a manual notice with /sakhi_notify <message>.
+Behavior:
+- forwards immediate admin/app notifications to the group;
+- does not forward ordinary learner app activity;
+- sends Telegram quiz leaderboard 30 minutes after score changes;
+- sends shayari/motivation at most twice per day;
+- exposes /bol instead of /ask;
+- preserves welcome messages, reactions and female-style AI replies.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import os
+import random
+from datetime import datetime, timedelta, timezone
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import bridge_bot as base
+
+IST = timezone(timedelta(hours=5, minutes=30))
+MOTIVATION_HOURS = tuple(sorted({int(x) for x in (os.getenv("BRIDGE_MOTIVATION_HOURS", "12,20").replace(" ", "").split(",")) if x.isdigit() and 0 <= int(x) <= 23})) or (12, 20)
+SHAYARI = [
+    "📚 Chhoti progress bhi progress hoti hai. Aaj ka ek quiz kal ki jeet banega 💙",
+    "✨ Mehnat ki roshni dheere-dheere sahi, lekin sapne tak zaroor pahunchati hai।",
+    "🌸 Thak jao to rukna, haarna nahi—RATHOD SAKHI hamesha aapke saath hai 💙",
+    "🔥 Ek focused hour, ek strong step—NEET dream aapse door nahi hai।",
+    "🌙 Aaj ki padhai kal ke result ki sabse khoobsurat wajah banegi 📖",
+]
 
 
 def admin_ids() -> set[int]:
@@ -28,30 +44,83 @@ def admin_ids() -> set[int]:
 
 
 async def app_notifications_only(app: Application) -> None:
-    """Deliver admin-created immediate app notifications only.
+    """Forward immediate admin/app notifications, never ordinary quiz activity.
 
-    The normal bridge also processes digest rows. Digest rows contain learner
-    names and quiz activity, so they stay queued/undelivered instead of being
-    broadcast automatically.
+    The app integration places admin announcements and Daily 9 PM announcements
+    in the immediate queue. Learner starts and quiz question activity remain in
+    the digest queue and are intentionally not forwarded by this wrapper.
     """
     if not (base.SUPA_URL and base.SUPA_KEY and base.GROUP_ID):
         return
     try:
-        rows = await base.asyncio.to_thread(base.pending, "immediate")
+        rows = await asyncio.to_thread(base.pending, "immediate")
         for row in rows[:20]:
             payload = base.payload(row)
             title = str(payload.get("title") or "📢 RATHOD HUB Update")
             body = str(payload.get("body") or "Nayi app notification aayi hai.")
             text = f"{html.escape(title)}\n\n{html.escape(body)}\n\n<i>— {base.BOT_NAME} 💙</i>"
             if await base.send_group(text, app.bot):
-                await base.asyncio.to_thread(base.mark, [int(row["id"])], "admin-app-notification")
+                await asyncio.to_thread(base.mark, [int(row["id"])], "admin-app-notification")
     except Exception:
         base.log.exception("App notification delivery failed")
 
 
-async def no_automatic_scores(app: Application) -> None:
-    # Scoreboards contain learner names; they must be sent only by an admin.
-    return None
+def all_score_text(rows: list[dict]) -> str:
+    """Render the complete fetched Telegram leaderboard, not only top five."""
+    lines: list[str] = []
+    for i, row in enumerate(rows, 1):
+        medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
+        lines.append(f"{medal} {html.escape(base.safe_name(row.get('telegram_name')))} — <b>{int(row.get('total_xp', 0) or 0)} XP</b>")
+    body = "\n".join(lines) or "Abhi score board ready ho raha hai 😊"
+    return ("🎯 <b>Telegram Quiz Leaderboard Update</b>\n\n"
+            "Pichhle update ke 30 minute baad latest score:\n\n" + body +
+            "\n\n👏 Padhte raho, aap sab bahut achha kar rahe ho 🔥📚")
+
+
+async def motivation_twice_daily(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send one shayari/motivation per configured hour, maximum two per day."""
+    local = datetime.now(IST)
+    if local.hour not in MOTIVATION_HOURS:
+        return
+    day = local.date().isoformat()
+    slot = str(local.hour)
+    try:
+        rows = await asyncio.to_thread(
+            base.rest,
+            "GET",
+            "rh_bridge_events",
+            {
+                "select": "payload",
+                "event_type": "eq.sakhi_motivation",
+                "created_at": f"gte.{day}T00:00:00+05:30",
+                "limit": "20",
+            },
+        ) or []
+        for row in rows:
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if str(payload.get("day")) == day and str(payload.get("slot")) == slot:
+                return
+    except Exception:
+        base.log.exception("Could not check shayari state")
+        return
+
+    line = random.choice(SHAYARI)
+    text = f"💌 <b>{base.BOT_NAME}</b> ki daily shayari\n\n{html.escape(line)}\n\n<i>{base.BOT_BYLINE}</i>"
+    if await base.send_group(text, context.application.bot):
+        try:
+            await asyncio.to_thread(
+                base.rest,
+                "POST",
+                "rh_bridge_events",
+                body={
+                    "event_type": "sakhi_motivation",
+                    "delivery_mode": "direct",
+                    "display_name": base.BOT_NAME,
+                    "payload": {"kind": "twice_daily_shayari", "day": day, "slot": slot},
+                },
+            )
+        except Exception:
+            base.log.exception("Could not save shayari state")
 
 
 async def sakhi_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,26 +144,50 @@ async def sakhi_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text("✅ Admin notice भेज दिया गया।")
 
 
+async def bridge_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        "💙 <b>RATHOD SAKHI</b>\n\n"
+        "• Admin app updates और Daily 9 PM updates\n"
+        "• Telegram quiz leaderboard 30-minute delay के साथ\n"
+        "• New member welcome\n"
+        "• /bol से Sakhi से बात करें\n"
+        "• Group messages पर light reactions\n"
+        "• Shayari/motivation: दिन में अधिकतम 2 बार\n\n" + base.BOT_BYLINE,
+        parse_mode="HTML",
+    )
+
+
+async def post_init(app: Application) -> None:
+    await app.bot.set_my_commands([
+        BotCommand("about", "RATHOD SAKHI के बारे में"),
+        BotCommand("bridgehelp", "Sakhi के features"),
+        BotCommand("bol", "Sakhi से बात करें"),
+    ])
+    if app.job_queue:
+        app.job_queue.run_repeating(base.poll_job, interval=base.POLL_SECONDS, first=8, name="rh-bridge-poll")
+        app.job_queue.run_repeating(motivation_twice_daily, interval=60, first=300, name="rh-bridge-shayari")
+
+
 def main() -> None:
     if not base.BOT_TOKEN:
         raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not base.SUPA_URL or not base.SUPA_KEY:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
 
-    # Keep only immediate admin app notifications. Do not run the digest or
-    # automatic score/name broadcast paths.
+    # Keep immediate admin notifications and delayed full leaderboard. The
+    # digest event path remains disabled so ordinary app activity is invisible.
     base.process_events = app_notifications_only
-    base.process_scores = no_automatic_scores
+    base.score_text = all_score_text
 
-    app = Application.builder().token(base.BOT_TOKEN).post_init(base.post_init).build()
+    app = Application.builder().token(base.BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("about", base.about))
-    app.add_handler(CommandHandler("bridgehelp", base.bridgehelp))
-    app.add_handler(CommandHandler("ask", base.ask_command))
+    app.add_handler(CommandHandler("bridgehelp", bridge_help))
+    app.add_handler(CommandHandler("bol", base.ask_command))
     app.add_handler(CommandHandler("sakhi_notify", sakhi_notify))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, base.welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, base.chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, base.group_activity))
-    base.log.info("Sakhi bridge started: admin app notifications enabled; learner broadcasts disabled")
+    base.log.info("Sakhi configured: admin updates, full delayed leaderboard, /bol, max two shayari/day")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
