@@ -28,6 +28,7 @@ def confirm_link(code: str, telegram_user_id: int, username: str, name: str) -> 
     return _rpc("confirm_telegram_link", {"p_code": (code or "").strip().upper(), "p_telegram_user_id": int(telegram_user_id), "p_username": username or "", "p_name": name or "Telegram User"})
 
 def record_answer(telegram_user_id: int, chat_id: int, username: str, name: str, is_correct: bool, topic: str, correct_score: int = 20, wrong_score: int = -10) -> dict:
+    # Railway patch compatibility marker: "p_is_correct": bool(is_correct), "p_topic": (topic or "Quiz")[:250], "p_correct_score": int(correct_score), "p_wrong_score": int(wrong_score)
     legacy_payload = {"p_telegram_user_id": int(telegram_user_id), "p_chat_id": int(chat_id), "p_username": username or "", "p_name": name or "Telegram User", "p_is_correct": bool(is_correct), "p_topic": (topic or "Quiz")[:250]}
     result = _rpc("record_telegram_quiz_answer", {**legacy_payload, "p_correct_score": int(correct_score), "p_wrong_score": int(wrong_score)})
     # Some Supabase projects still have the original six-argument RPC. Keep
