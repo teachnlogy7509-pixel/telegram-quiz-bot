@@ -1,6 +1,7 @@
 """RATHOD SAKHI VIP Bridge Bot.
 Separate service start command: python bridge_bot.py
-It does not create quizzes; it announces app activity and delayed scores.
+It announces app activity, delayed scores and answers /ask or mentions.
+Online AI fallback order: OpenRouter -> Gemini -> Groq -> local offline reply.
 """
 from __future__ import annotations
 
@@ -30,10 +31,12 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 POLL_SECONDS = max(30, int(os.environ.get("BRIDGE_POLL_SECONDS", "60")))
 SCORE_DELAY_MINUTES = max(30, int(os.environ.get("BRIDGE_SCORE_DELAY_MINUTES", "30")))
 MOTIVATION_MINUTES = max(60, int(os.environ.get("BRIDGE_MOTIVATION_MINUTES", "180")))
-OPENROUTER_KEYS = [x for x in (os.environ.get("OPENROUTER_API_KEY"), os.environ.get("OPENROUTER_API_KEY_2")) if x]
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/auto")
-GEMINI_KEYS = [x for x in (os.environ.get("GEMINI_API_KEY"), os.environ.get("GEMINI_API_KEY_2")) if x]
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
 MOTIVATION_LINES = [
     "📚 Aaj ka study page thoda khula hai, par story abhi baaki hai 😄 20 minute focus kar lo—motivation khud aa jayegi 💙✨",
@@ -82,18 +85,20 @@ def _ai_system() -> str:
             "Do not claim to be human or a real romantic partner.")
 
 
-def _openrouter(prompt: str, key: str) -> str:
+def _messages(prompt: str) -> list[dict[str, str]]:
+    return [{"role": "system", "content": _ai_system()}, {"role": "user", "content": prompt}]
+
+
+def _openrouter(prompt: str) -> str:
     data = _post_json("https://openrouter.ai/api/v1/chat/completions", {
-        "model": OPENROUTER_MODEL,
-        "messages": [{"role": "system", "content": _ai_system()}, {"role": "user", "content": prompt}],
-        "temperature": 0.75, "max_tokens": 450,
-    }, {"Authorization": f"Bearer {key}", "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/", "X-Title": "RATHOD SAKHI"})
+        "model": OPENROUTER_MODEL, "messages": _messages(prompt), "temperature": 0.75, "max_tokens": 450,
+    }, {"Authorization": f"Bearer {OPENROUTER_KEY}", "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/", "X-Title": "RATHOD SAKHI"})
     return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
-def _gemini(prompt: str, key: str) -> str:
+def _gemini(prompt: str) -> str:
     model = parse.quote(GEMINI_MODEL, safe="")
-    secret = parse.quote(key, safe="")
+    secret = parse.quote(GEMINI_KEY, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={secret}"
     data = _post_json(url, {
         "system_instruction": {"parts": [{"text": _ai_system()}]},
@@ -102,6 +107,13 @@ def _gemini(prompt: str, key: str) -> str:
     })
     parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
     return "".join(str(part.get("text") or "") for part in parts).strip()
+
+
+def _groq(prompt: str) -> str:
+    data = _post_json("https://api.groq.com/openai/v1/chat/completions", {
+        "model": GROQ_MODEL, "messages": _messages(prompt), "temperature": 0.75, "max_tokens": 450,
+    }, {"Authorization": f"Bearer {GROQ_KEY}"})
+    return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
 def _offline_reply(prompt: str) -> str:
@@ -117,20 +129,17 @@ def _offline_reply(prompt: str) -> str:
 
 async def ask_ai(prompt: str) -> str:
     question = str(prompt or "").strip()[:1800]
-    for key in OPENROUTER_KEYS:
+    providers = []
+    if OPENROUTER_KEY: providers.append(("OpenRouter", lambda: _openrouter(question)))
+    if GEMINI_KEY: providers.append(("Gemini", lambda: _gemini(question)))
+    if GROQ_KEY: providers.append(("Groq", lambda: _groq(question)))
+    for name, provider in providers:
         try:
-            answer = await asyncio.to_thread(_openrouter, question, key)
+            answer = await asyncio.to_thread(provider)
             if answer:
                 return answer
         except Exception as exc:
-            logger.warning("OpenRouter fallback: %s", str(exc)[:160])
-    for key in GEMINI_KEYS:
-        try:
-            answer = await asyncio.to_thread(_gemini, question, key)
-            if answer:
-                return answer
-        except Exception as exc:
-            logger.warning("Gemini fallback: %s", str(exc)[:160])
+            logger.warning("%s fallback: %s", name, str(exc)[:160])
     return _offline_reply(question)
 
 
@@ -184,8 +193,7 @@ def _payload(row: dict) -> dict:
 
 
 def _event_digest(rows: list[dict]) -> str:
-    users: dict[str, int] = {}; modes: dict[str, int] = {}
-    correct = 0; xp = 0
+    users: dict[str, int] = {}; modes: dict[str, int] = {}; correct = 0; xp = 0
     for row in rows:
         p = _payload(row); name = _safe_name(row.get("display_name")); users[name] = users.get(name, 0) + 1
         mode = str(p.get("mode") or "Study Practice"); modes[mode] = modes.get(mode, 0) + 1
@@ -312,7 +320,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, chat_message))
-    logger.info("%s started; score delay=%sm; poll=%ss; OpenRouter=%s; Gemini=%s", BOT_NAME, SCORE_DELAY_MINUTES, POLL_SECONDS, bool(OPENROUTER_KEYS), bool(GEMINI_KEYS))
+    logger.info("%s started; score delay=%sm; poll=%ss; OpenRouter=%s; Gemini=%s; Groq=%s", BOT_NAME, SCORE_DELAY_MINUTES, POLL_SECONDS, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY))
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
