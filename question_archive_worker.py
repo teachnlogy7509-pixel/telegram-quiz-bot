@@ -1,4 +1,4 @@
-"""Build four-day Notes/Test PDFs from quiz_question bridge events and keep them in Drive."""
+"""Build four-day Notes/Test PDFs from allowed quiz events and keep them in Drive."""
 from __future__ import annotations
 import io,json,logging,os,re,time
 from datetime import datetime,timedelta,timezone
@@ -23,24 +23,19 @@ def ensure_hindi_font():
             if not os.path.exists(FONT_PATH):
                 css_req=request.Request("https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400&display=swap",headers={"User-Agent":"Mozilla/5.0"})
                 css=request.urlopen(css_req,timeout=30).read().decode("utf-8")
-                blocks=re.findall(r"@font-face\\s*\\{(.*?)\\}",css,re.S)
-                url=None
+                blocks=re.findall(r"@font-face\\s*\\{(.*?)\\}",css,re.S); url=None
                 for block in blocks:
                     if "U+0900" in block or "U+0901" in block:
                         match=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",block)
                         if match:url=match.group(1);break
                 if not url:
-                    match=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",css)
-                    url=match.group(1) if match else None
+                    match=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",css); url=match.group(1) if match else None
                 if not url: raise RuntimeError("Noto Devanagari font URL not found")
-                with request.urlopen(request.Request(url,headers={"User-Agent":"Mozilla/5.0"}),timeout=60) as r:
-                    open(FONT_PATH,"wb").write(r.read())
-            pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH))
-            log.info("Hindi PDF font ready")
+                with request.urlopen(request.Request(url,headers={"User-Agent":"Mozilla/5.0"}),timeout=60) as r: open(FONT_PATH,"wb").write(r.read())
+            pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH)); log.info("Hindi PDF font ready")
         return FONT_NAME
     except Exception as exc:
-        log.warning("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180])
-        return "Helvetica"
+        log.warning("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]); return "Helvetica"
 
 def rest(method,table,params=None,body=None):
     if not SUPA_URL or not SUPA_KEY: raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
@@ -78,8 +73,15 @@ def upload_or_update(access,folder,name,pdf):
 def window(now):
     start=now.replace(day=((now.day-1)//4)*4+1,hour=0,minute=0,second=0,microsecond=0); return start,start+timedelta(days=4)
 
-def is_daily(row):
-    p=row.get("payload") if isinstance(row.get("payload"),dict) else {}; text=" ".join(str(p.get(k,"")) for k in ("source","mode","quiz_name","event_type")).lower(); return any(x in text for x in ("daily event","daily 9 pm","daily_9pm","dailyevent"))
+def allowed_source(row):
+    p=row.get("payload") if isinstance(row.get("payload"),dict) else {}
+    text=" ".join(str(p.get(k,"")) for k in ("source","mode","quiz_name","event_type")).lower().replace("_"," ")
+    if "telegram" in text: return True
+    return bool(re.search(r"neet\s*720|daily\s*9\s*pm|9\s*pm\s*(battle|arena|quiz)|scheduled\s*(battle|quiz)",text,re.I))
+
+def is_old_daily_event(row):
+    p=row.get("payload") if isinstance(row.get("payload"),dict) else {}; text=" ".join(str(p.get(k,"")) for k in ("source","mode","quiz_name","event_type")).lower()
+    return "daily event" in text or "dailyevent" in text
 
 def extract(row):
     p=row.get("payload") if isinstance(row.get("payload"),dict) else {}; q=str(p.get("question") or "").strip(); opts=p.get("options")
@@ -93,8 +95,7 @@ def make_pdf(title,rows,answers):
     for n,q in enumerate(rows,1):
         story.append(Paragraph(escape(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"])); [story.append(Paragraph(escape(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
         if answers:
-            answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"])
-            story.append(Paragraph(escape("Answer: "+answer),styles["RA"]))
+            answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"]); story.append(Paragraph(escape("Answer: "+answer),styles["RA"]))
     doc.build(story); return out.getvalue()
 
 def rows_for(start,end):
@@ -102,14 +103,14 @@ def rows_for(start,end):
     for row in raw:
         try: created=datetime.fromisoformat(str(row.get("created_at","")).replace("Z","+00:00"))
         except ValueError: continue
-        if created>=end or is_daily(row) or row.get("event_type") not in {"quiz_question","quiz_item","question_solved"}: continue
+        if created>=end or is_old_daily_event(row) or not allowed_source(row) or row.get("event_type") not in {"quiz_question","quiz_item","question_solved"}: continue
         q=extract(row)
         if q: unique.setdefault((q["question"],q["mode"]),q)
     return list(unique.values())
 
 def run_once():
     start,end=window(datetime.now(timezone.utc)); rows=rows_for(start,end)
-    if not rows: log.info("No questions in %s-%s",start.date(),(end-timedelta(days=1)).date()); return
+    if not rows: log.info("No allowed questions in %s-%s",start.date(),(end-timedelta(days=1)).date()); return
     access=token(); label=start.strftime("%d-%b")+"_to_"+(end-timedelta(days=1)).strftime("%d-%b-%Y")
     if NOTES_FOLDER: log.info("Notes PDF: %s",upload_or_update(access,NOTES_FOLDER,"Notes_"+label+".pdf",make_pdf("RATHOD HUB Notes - "+label,rows,True)))
     if TESTS_FOLDER: log.info("Test PDF: %s",upload_or_update(access,TESTS_FOLDER,"Test_"+label+".pdf",make_pdf("RATHOD HUB Test Bank - "+label,rows,False)))
