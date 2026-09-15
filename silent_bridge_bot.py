@@ -30,6 +30,8 @@ SHAYARI = [
     "🔥 Ek focused hour, ek strong step—NEET dream aapse door nahi hai।",
     "🌙 Aaj ki padhai kal ke result ki sabse khoobsurat wajah banegi 📖",
 ]
+SENT_MOTIVATION_SLOTS: set[str] = set()
+MOTIVATION_LOCK = asyncio.Lock()
 
 
 def admin_ids() -> set[int]:
@@ -44,12 +46,7 @@ def admin_ids() -> set[int]:
 
 
 async def app_notifications_only(app: Application) -> None:
-    """Forward immediate admin/app notifications, never ordinary quiz activity.
-
-    The app integration places admin announcements and Daily 9 PM announcements
-    in the immediate queue. Learner starts and quiz question activity remain in
-    the digest queue and are intentionally not forwarded by this wrapper.
-    """
+    """Forward immediate admin/app notifications, never ordinary quiz activity."""
     if not (base.SUPA_URL and base.SUPA_KEY and base.GROUP_ID):
         return
     try:
@@ -66,7 +63,6 @@ async def app_notifications_only(app: Application) -> None:
 
 
 def all_score_text(rows: list[dict]) -> str:
-    """Render the complete fetched Telegram leaderboard, not only top five."""
     lines: list[str] = []
     for i, row in enumerate(rows, 1):
         medal = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else f"{i}."
@@ -78,35 +74,45 @@ def all_score_text(rows: list[dict]) -> str:
 
 
 async def motivation_twice_daily(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send one shayari/motivation per configured hour, maximum two per day."""
+    """Send one shayari per configured hour, with a process and DB guard."""
     local = datetime.now(IST)
     if local.hour not in MOTIVATION_HOURS:
         return
     day = local.date().isoformat()
     slot = str(local.hour)
-    try:
-        rows = await asyncio.to_thread(
-            base.rest,
-            "GET",
-            "rh_bridge_events",
-            {
-                "select": "payload",
-                "event_type": "eq.sakhi_motivation",
-                "created_at": f"gte.{day}T00:00:00+05:30",
-                "limit": "20",
-            },
-        ) or []
-        for row in rows:
-            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-            if str(payload.get("day")) == day and str(payload.get("slot")) == slot:
-                return
-    except Exception:
-        base.log.exception("Could not check shayari state")
-        return
+    key = f"{day}:{slot}"
+    async with MOTIVATION_LOCK:
+        if key in SENT_MOTIVATION_SLOTS:
+            return
+        # Claim the slot before network calls so a repeated scheduler tick can
+        # never send another message in the same running process.
+        SENT_MOTIVATION_SLOTS.add(key)
+        try:
+            rows = await asyncio.to_thread(
+                base.rest,
+                "GET",
+                "rh_bridge_events",
+                {
+                    "select": "payload",
+                    "event_type": "eq.sakhi_motivation",
+                    "created_at": f"gte.{day}T00:00:00+05:30",
+                    "limit": "20",
+                },
+            ) or []
+            for row in rows:
+                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                if str(payload.get("day")) == day and str(payload.get("slot")) == slot:
+                    return
+        except Exception:
+            SENT_MOTIVATION_SLOTS.discard(key)
+            base.log.exception("Could not check shayari state")
+            return
 
-    line = random.choice(SHAYARI)
-    text = f"💌 <b>{base.BOT_NAME}</b> ki daily shayari\n\n{html.escape(line)}\n\n<i>{base.BOT_BYLINE}</i>"
-    if await base.send_group(text, context.application.bot):
+        line = random.choice(SHAYARI)
+        text = f"💌 <b>{base.BOT_NAME}</b> ki daily shayari\n\n{html.escape(line)}\n\n<i>{base.BOT_BYLINE}</i>"
+        if not await base.send_group(text, context.application.bot):
+            SENT_MOTIVATION_SLOTS.discard(key)
+            return
         try:
             await asyncio.to_thread(
                 base.rest,
@@ -120,6 +126,8 @@ async def motivation_twice_daily(context: ContextTypes.DEFAULT_TYPE) -> None:
                 },
             )
         except Exception:
+            # Keep the process guard; log the DB failure so a second deployed
+            # copy can be removed instead of producing a spam loop.
             base.log.exception("Could not save shayari state")
 
 
@@ -173,12 +181,8 @@ def main() -> None:
         raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not base.SUPA_URL or not base.SUPA_KEY:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
-
-    # Keep immediate admin notifications and delayed full leaderboard. The
-    # digest event path remains disabled so ordinary app activity is invisible.
     base.process_events = app_notifications_only
     base.score_text = all_score_text
-
     app = Application.builder().token(base.BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("about", base.about))
     app.add_handler(CommandHandler("bridgehelp", bridge_help))
@@ -187,7 +191,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, base.welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, base.chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, base.group_activity))
-    base.log.info("Sakhi configured: admin updates, full delayed leaderboard, /bol, max two shayari/day")
+    base.log.info("Sakhi configured: max two shayari/day with duplicate guard")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
