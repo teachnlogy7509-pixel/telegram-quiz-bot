@@ -56,6 +56,11 @@ def ensure_hindi_font():
         except Exception as exc:errors.append(f"{url}: {exc}")
     raise RuntimeError("Noto Sans Devanagari unavailable; "+" | ".join(errors)[-500:])
 
+def mixed_pdf_text(value):
+    """Render Devanagari with Noto and keep Latin labels/numbers in Helvetica."""
+    safe=escape(str(value))
+    return re.sub(r"[\u0900-\u097F\u200C\u200D]+",lambda m:f'<font name="{FONT_NAME}">{m.group(0)}</font>',safe)
+
 def rest(method,table,params=None,body=None):
     if not SUPA_URL or not SUPA_KEY:raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     url=f"{SUPA_URL}/rest/v1/{table}"+("?"+parse.urlencode(params,safe="(),.*") if params else "");headers={"apikey":SUPA_KEY,"Authorization":f"Bearer {SUPA_KEY}","Content-Type":"application/json","Accept":"application/json"};data=None if body is None else json.dumps(body).encode()
@@ -104,10 +109,10 @@ def extract(row):
     return {"question":q,"options":[str(x) for x in opts],"correct_index":correct,"mode":str(p.get("mode") or "Quiz")}
 
 def make_pdf(title,rows,answers):
-    font=ensure_hindi_font();out=io.BytesIO();doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm);styles=getSampleStyleSheet();styles.add(ParagraphStyle(name="RATitle",parent=styles["Title"],fontName=font));styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontName=font,fontSize=8.5,leading=12));styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontName=font,fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4));story=[Paragraph(escape(title),styles["RATitle"]),Spacer(1,5*mm),Paragraph(escape(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
+    ensure_hindi_font();out=io.BytesIO();doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm);styles=getSampleStyleSheet();styles.add(ParagraphStyle(name="RATitle",parent=styles["Title"],fontName="Helvetica-Bold"));styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontName="Helvetica",fontSize=8.5,leading=12));styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontName="Helvetica-Bold",fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4));story=[Paragraph(mixed_pdf_text(title),styles["RATitle"]),Spacer(1,5*mm),Paragraph(mixed_pdf_text(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
     for n,q in enumerate(rows,1):
-        story.append(Paragraph(escape(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"]));[story.append(Paragraph(escape(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
-        if answers:answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"]);story.append(Paragraph(escape("Answer: "+answer),styles["RA"]))
+        story.append(Paragraph(mixed_pdf_text(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"]));[story.append(Paragraph(mixed_pdf_text(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
+        if answers:answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"]);story.append(Paragraph(mixed_pdf_text("Answer: "+answer),styles["RA"]))
     doc.build(story);return out.getvalue()
 
 def rows_for(start,end):
