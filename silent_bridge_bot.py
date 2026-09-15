@@ -1,11 +1,13 @@
 """RATHOD SAKHI bridge wrapper.
 
-Keeps the existing bridge_bot features and AI commands, but disables automatic
-quiz/score broadcasts that list students. Admins can send a manual notice with
-/sakhi_notify <message>.
+Keeps the existing bridge_bot features and app notifications, but disables
+automatic learner quiz/score broadcasts that list students. Admin-created app
+notifications stored as immediate events are still delivered to the group.
+Admins can send a manual notice with /sakhi_notify <message>.
 """
 from __future__ import annotations
 
+import html
 import os
 
 from telegram import Update
@@ -25,20 +27,36 @@ def admin_ids() -> set[int]:
     return result
 
 
-async def no_automatic_events(app: Application) -> None:
-    # Intentionally silent: quiz results, scoreboards and learner names are not
-    # broadcast automatically. Admin can use /sakhi_notify when needed.
-    return None
+async def app_notifications_only(app: Application) -> None:
+    """Deliver admin-created immediate app notifications only.
+
+    The normal bridge also processes digest rows. Digest rows contain learner
+    names and quiz activity, so they stay queued/undelivered instead of being
+    broadcast automatically.
+    """
+    if not (base.SUPA_URL and base.SUPA_KEY and base.GROUP_ID):
+        return
+    try:
+        rows = await base.asyncio.to_thread(base.pending, "immediate")
+        for row in rows[:20]:
+            payload = base.payload(row)
+            title = str(payload.get("title") or "📢 RATHOD HUB Update")
+            body = str(payload.get("body") or "Nayi app notification aayi hai.")
+            text = f"{html.escape(title)}\n\n{html.escape(body)}\n\n<i>— {base.BOT_NAME} 💙</i>"
+            if await base.send_group(text, app.bot):
+                await base.asyncio.to_thread(base.mark, [int(row["id"])], "admin-app-notification")
+    except Exception:
+        base.log.exception("App notification delivery failed")
 
 
 async def no_automatic_scores(app: Application) -> None:
+    # Scoreboards contain learner names; they must be sent only by an admin.
     return None
 
 
 async def sakhi_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     caller = update.effective_user
     if not caller or caller.id not in admin_ids():
-        # Do not reveal the configured admin list.
         return
     message = " ".join(context.args or []).strip()
     reply = update.effective_message.reply_to_message if update.effective_message else None
@@ -63,9 +81,9 @@ def main() -> None:
     if not base.SUPA_URL or not base.SUPA_KEY:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
 
-    # Patch only the scheduled automatic broadcast functions. Existing bridge
-    # commands, welcome flow, reactions and AI chat remain available.
-    base.process_events = no_automatic_events
+    # Keep only immediate admin app notifications. Do not run the digest or
+    # automatic score/name broadcast paths.
+    base.process_events = app_notifications_only
     base.process_scores = no_automatic_scores
 
     app = Application.builder().token(base.BOT_TOKEN).post_init(base.post_init).build()
@@ -76,7 +94,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, base.welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, base.chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, base.group_activity))
-    base.log.info("Silent Sakhi bridge started: automatic quiz/score broadcasts disabled")
+    base.log.info("Sakhi bridge started: admin app notifications enabled; learner broadcasts disabled")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
