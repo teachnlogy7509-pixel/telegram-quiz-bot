@@ -10,6 +10,9 @@ from telegram import BotCommand
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 
+_INSTALLED = False
+
+
 def _is_admin(update, admin_ids) -> bool:
     user = update.effective_user
     return bool(user and int(user.id) in {int(x) for x in admin_ids})
@@ -131,9 +134,10 @@ async def handle_private_message(update, context: ContextTypes.DEFAULT_TYPE, *, 
 
 
 async def install(application, db_module, admin_ids):
-    if getattr(application, "_rathod_admin_installed", False):
+    global _INSTALLED
+    if _INSTALLED:
         return
-    application._rathod_admin_installed = True
+    _INSTALLED = True
     application.add_handler(CommandHandler("adminpanel", partial(cmd_adminpanel, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("broadcast", partial(cmd_broadcast, db_module=db_module, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("dm", partial(cmd_dm, admin_ids=admin_ids)))
