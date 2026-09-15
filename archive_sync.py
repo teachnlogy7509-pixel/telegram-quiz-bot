@@ -1,4 +1,4 @@
-"""Service-role event writer for Telegram question archiving."""
+"""Service-role event writer for all Telegram question types."""
 from __future__ import annotations
 import json, os
 from urllib import request
@@ -10,8 +10,6 @@ def record_questions(topic: str, mode: str, questions: list[dict]) -> int:
     if not URL or not KEY or not questions:
         return 0
     topic_text=str(topic or "Quiz").strip()[:120]
-    if any(x in topic_text.lower() for x in ("daily event","daily 9 pm","daily_9pm")):
-        return 0
     rows=[]
     for q in questions:
         opts=q.get("options") if isinstance(q,dict) else None
