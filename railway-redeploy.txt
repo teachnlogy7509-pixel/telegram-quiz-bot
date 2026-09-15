@@ -1,0 +1,2 @@
+Railway rebuild trigger: 2026-09-15T16:42:00Z
+Required source commit includes Hindi PDF fixes fa40d0dc.
