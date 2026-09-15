@@ -1,18 +1,46 @@
 """Build four-day Notes/Test PDFs from quiz_question bridge events and keep them in Drive."""
 from __future__ import annotations
-import io,json,logging,os,time
+import io,json,logging,os,re,time
 from datetime import datetime,timedelta,timezone
 from html import escape
 from urllib import parse,request
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet,ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s",level=logging.INFO)
 log=logging.getLogger("rathod-question-archive")
 SUPA_URL=os.getenv("SUPABASE_URL","").rstrip("/"); SUPA_KEY=os.getenv("SUPABASE_SERVICE_ROLE_KEY","")
 CLIENT_ID=os.getenv("GOOGLE_CLIENT_ID","").strip(); CLIENT_SECRET=os.getenv("GOOGLE_CLIENT_SECRET","").strip(); REFRESH_TOKEN=os.getenv("GOOGLE_REFRESH_TOKEN","").strip()
 NOTES_FOLDER=os.getenv("DRIVE_FOLDER_QUESTION_NOTES","").strip(); TESTS_FOLDER=os.getenv("DRIVE_FOLDER_QUESTION_TESTS","").strip(); POLL_SECONDS=max(60,int(os.getenv("ARCHIVE_POLL_SECONDS","120")))
+FONT_NAME="RathodDevanagari"; FONT_PATH="/tmp/NotoSansDevanagari-Regular.ttf"
+
+def ensure_hindi_font():
+    try:
+        if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+            if not os.path.exists(FONT_PATH):
+                css_req=request.Request("https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400&display=swap",headers={"User-Agent":"Mozilla/5.0"})
+                css=request.urlopen(css_req,timeout=30).read().decode("utf-8")
+                blocks=re.findall(r"@font-face\\s*\\{(.*?)\\}",css,re.S)
+                url=None
+                for block in blocks:
+                    if "U+0900" in block or "U+0901" in block:
+                        match=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",block)
+                        if match:url=match.group(1);break
+                if not url:
+                    match=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",css)
+                    url=match.group(1) if match else None
+                if not url: raise RuntimeError("Noto Devanagari font URL not found")
+                with request.urlopen(request.Request(url,headers={"User-Agent":"Mozilla/5.0"}),timeout=60) as r:
+                    open(FONT_PATH,"wb").write(r.read())
+            pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH))
+            log.info("Hindi PDF font ready")
+        return FONT_NAME
+    except Exception as exc:
+        log.warning("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180])
+        return "Helvetica"
 
 def rest(method,table,params=None,body=None):
     if not SUPA_URL or not SUPA_KEY: raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
@@ -61,7 +89,7 @@ def extract(row):
     return {"question":q,"options":[str(x) for x in opts],"correct_index":correct,"mode":str(p.get("mode") or "Quiz")}
 
 def make_pdf(title,rows,answers):
-    out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm); styles=getSampleStyleSheet(); styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontSize=8.5,leading=11)); styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4)); story=[Paragraph(escape(title),styles["Title"]),Spacer(1,5*mm),Paragraph(escape(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
+    font=ensure_hindi_font(); out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm); styles=getSampleStyleSheet(); styles.add(ParagraphStyle(name="RATitle",parent=styles["Title"],fontName=font)); styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontName=font,fontSize=8.5,leading=12)); styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontName=font,fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4)); story=[Paragraph(escape(title),styles["RATitle"]),Spacer(1,5*mm),Paragraph(escape(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
     for n,q in enumerate(rows,1):
         story.append(Paragraph(escape(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"])); [story.append(Paragraph(escape(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
         if answers:
