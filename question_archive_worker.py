@@ -18,21 +18,39 @@ NOTES_FOLDER=os.getenv("DRIVE_FOLDER_QUESTION_NOTES","").strip(); TESTS_FOLDER=o
 FONT_NAME="RathodDevanagari"; FONT_PATH="/tmp/NotoSansDevanagari-Regular.ttf"
 
 def ensure_hindi_font():
+    """Install a real TTF before building the PDF; never silently use Helvetica for Hindi."""
     try:
-        if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
-            if not os.path.exists(FONT_PATH):
-                css=request.urlopen(request.Request("https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400&display=swap",headers={"User-Agent":"Mozilla/5.0"}),timeout=30).read().decode("utf-8"); blocks=re.findall(r"@font-face\\s*\\{(.*?)\\}",css,re.S); url=None
-                for block in blocks:
-                    if "U+0900" in block or "U+0901" in block:
-                        m=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",block)
-                        if m:url=m.group(1);break
-                if not url:
-                    m=re.search(r"url\\((https://fonts\\.gstatic\\.com/[^)]+)\\)",css);url=m.group(1) if m else None
-                if not url: raise RuntimeError("Noto Devanagari font URL not found")
-                with request.urlopen(request.Request(url,headers={"User-Agent":"Mozilla/5.0"}),timeout=60) as r:open(FONT_PATH,"wb").write(r.read())
-            pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH));log.info("Hindi PDF font ready")
-        return FONT_NAME
-    except Exception as exc:log.warning("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]);return "Helvetica"
+        if FONT_NAME in pdfmetrics.getRegisteredFontNames():
+            return FONT_NAME
+        def valid_ttf(path):
+            if not os.path.exists(path) or os.path.getsize(path) < 10000:
+                return False
+            with open(path,"rb") as fh: magic=fh.read(4)
+            return magic in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1")
+        if os.path.exists(FONT_PATH) and not valid_ttf(FONT_PATH):
+            os.remove(FONT_PATH)
+        if not os.path.exists(FONT_PATH):
+            urls=[
+                "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansdevanagari/static/NotoSansDevanagari-Regular.ttf",
+                "https://github.com/google/fonts/raw/refs/heads/main/ofl/notosansdevanagari/static/NotoSansDevanagari-Regular.ttf",
+                "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansdevanagari/static/NotoSansDevanagari-Regular.ttf",
+            ]
+            last=None
+            for url in urls:
+                try:
+                    req=request.Request(url,headers={"User-Agent":"RATHOD-HUB-Archive/1.0"})
+                    with request.urlopen(req,timeout=60) as response:data=response.read()
+                    if len(data)<10000 or data[:4] not in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1"):
+                        raise RuntimeError("downloaded response is not a TTF")
+                    with open(FONT_PATH,"wb") as fh:fh.write(data)
+                    break
+                except Exception as exc:
+                    last=exc
+            if not os.path.exists(FONT_PATH) or not valid_ttf(FONT_PATH):
+                raise RuntimeError("Noto Sans Devanagari TTF download failed: "+str(last)[:120])
+        pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH));log.info("Hindi PDF font ready: %s",FONT_PATH);return FONT_NAME
+    except Exception as exc:
+        log.exception("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]);return "Helvetica"
 
 def rest(method,table,params=None,body=None):
     if not SUPA_URL or not SUPA_KEY:raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
