@@ -28,8 +28,9 @@ GROUP_ID = (os.getenv("BRIDGE_GROUP_CHAT_ID") or os.getenv("APP_UPDATE_CHAT_ID")
 SUPA_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPA_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 POLL_SECONDS = max(30, int(os.getenv("BRIDGE_POLL_SECONDS", "60")))
+# 480 minutes = at most 3 motivation messages per day. 720 gives about 2/day.
+MOTIVATION_MINUTES = max(480, int(os.getenv("BRIDGE_MOTIVATION_MINUTES", "480")))
 SCORE_DELAY = max(30, int(os.getenv("BRIDGE_SCORE_DELAY_MINUTES", "30")))
-MOTIVATION_MINUTES = max(60, int(os.getenv("BRIDGE_MOTIVATION_MINUTES", "180")))
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -44,8 +45,10 @@ MOTIVATION_LINES = [
     "💙 Perfect hona zaroori nahi; aaj kal se thoda better hona zaroori hai 📖",
     "🌸 Chalo sirf 15 minute start karte hain. Motivation raste me aa jayegi 😊",
 ]
-last_motivation = 0.0
+# Do not send immediately after a Railway restart.
+last_motivation = time.time()
 last_line = ""
+last_reaction = 0.0
 score_snapshot: dict[str, int] | None = None
 score_changed_at: float | None = None
 
@@ -139,8 +142,10 @@ def safe_name(value: object) -> str:
 
 
 async def send_group(text: str, bot, chat_id: int | None = None) -> bool:
-    target = chat_id or (int(GROUP_ID) if GROUP_ID.lstrip("-").isdigit() else None)
-    if target is None:
+    raw = str(chat_id if chat_id is not None else GROUP_ID).strip()
+    try:
+        target = int(raw)
+    except (TypeError, ValueError):
         log.warning("BRIDGE_GROUP_CHAT_ID is missing or invalid")
         return False
     try:
@@ -149,6 +154,27 @@ async def send_group(text: str, bot, chat_id: int | None = None) -> bool:
     except Exception:
         log.exception("Telegram send failed")
         return False
+
+
+async def maybe_react(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global last_reaction
+    message = update.effective_message
+    if not message or not update.effective_chat or update.effective_chat.type not in ("group", "supergroup"):
+        return
+    if message.from_user and message.from_user.is_bot:
+        return
+    # A light reaction at most once every 90 seconds, not on every message.
+    if time.time() - last_reaction < 90 or random.random() > 0.35:
+        return
+    try:
+        from telegram import ReactionTypeEmoji
+        react = getattr(context.bot, "set_message_reaction", None)
+        if react is None:
+            return
+        await react(chat_id=update.effective_chat.id, message_id=message.message_id, reaction=[ReactionTypeEmoji(random.choice(["😂", "😄", "❤️", "🔥", "👏", "👍"]))])
+        last_reaction = time.time()
+    except Exception as exc:
+        log.info("Reaction skipped; give the bot reaction permission if supported: %s", str(exc)[:120])
 
 
 def pending(mode: str, cutoff: datetime | None = None) -> list[dict]:
@@ -243,7 +269,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def bridgehelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
 
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -270,6 +296,11 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await message.reply_text(html.escape(await ask_ai(question)), parse_mode=ParseMode.HTML)
 
 
+async def group_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await maybe_react(update, context)
+    await chat_message(update, context)
+
+
 async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.new_chat_members:
         return
@@ -284,7 +315,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
     if app.job_queue:
         app.job_queue.run_repeating(poll_job, interval=POLL_SECONDS, first=8, name="rh-bridge-poll")
-        app.job_queue.run_repeating(motivation_job, interval=60, first=120, name="rh-bridge-motivation")
+        app.job_queue.run_repeating(motivation_job, interval=60, first=300, name="rh-bridge-motivation")
 
 
 def main() -> None:
@@ -294,8 +325,8 @@ def main() -> None:
     app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, chat_message))
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, chat_message))
-    log.info("%s started; online providers: OpenRouter=%s Gemini=%s Groq=%s", BOT_NAME, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY))
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, group_activity))
+    log.info("%s started; OpenRouter=%s Gemini=%s Groq=%s; motivation cooldown=%sm", BOT_NAME, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY), MOTIVATION_MINUTES)
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
