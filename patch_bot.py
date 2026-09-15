@@ -13,6 +13,7 @@ def repall(path,old,new):
 rep('config.py','GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")\n\nDB_PATH = "scores.db"\n\nCORRECT_SCORE = 4\nWRONG_SCORE = -1','GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")\n\n# Secure score sync: set only in Railway Variables.\nSUPABASE_URL = os.environ.get("SUPABASE_URL", "")\nSUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")\n\nDB_PATH = "scores.db"\n\nCORRECT_SCORE = 20\nWRONG_SCORE = -10')
 rep('main.py','import database as db\nimport leaderboard','import database as db\nimport supabase_sync\nimport leaderboard')
 rep('main.py','/timer <15|30|45|60> — Quiz timer\n\n📊 Stats:','/timer <15|30|45|60> — Quiz timer\n/link <app code> — RATHOD HUB account link करें\n\n📊 Stats:')
+rep('main.py','/proquiz <topic> <number> — Ultra-level NCERT/PYQ/Assertion quiz\n/aistatus','/proquiz <topic> <number> — Ultra-level NCERT/PYQ/Assertion quiz\n/highlevel <topic> <number> — +100/-50 high-level quiz\n/guide <question> — RATHOD app guide\n/tutor <question> — AI Tutor Pro\n/plan <subject> <hours> — Study plan\n/notify <message> — Admin group notification\n/coupon <code> <note> — Admin coupon announcement\n/broadcast <message> — Admin broadcast\n/dm <user_id> <message> — Admin direct message\n/aistatus')
 link='''async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
     args = context.args or []
