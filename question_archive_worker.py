@@ -31,9 +31,9 @@ def ensure_hindi_font():
             os.remove(FONT_PATH)
         if not os.path.exists(FONT_PATH):
             urls=[
-                "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansdevanagari/static/NotoSansDevanagari-Regular.ttf",
-                "https://github.com/google/fonts/raw/refs/heads/main/ofl/notosansdevanagari/static/NotoSansDevanagari-Regular.ttf",
-                "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansdevanagari/static/NotoSansDevanagari-Regular.ttf",
+                "https://github.com/openmaptiles/fonts/raw/refs/heads/master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                "https://raw.githubusercontent.com/openmaptiles/fonts/master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                "https://cdn.jsdelivr.net/gh/openmaptiles/fonts@master/noto-sans/NotoSansDevanagari-Regular.ttf",
             ]
             last=None
             for url in urls:
