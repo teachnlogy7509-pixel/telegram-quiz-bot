@@ -155,4 +155,4 @@ async def install(application, db_module, admin_ids):
         BotCommand("broadcast", "Broadcast to registered chats"),
         BotCommand("dm", "Direct message a user"),
     ]
-    await application.bot.set_my_commands(existing + [x for x in additions if x.command not in known])
+    await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
