@@ -78,4 +78,8 @@ rep('vip_commands.py','session = quiz_module.start_group_session(chat_id, questi
 rep('vip_commands.py','session = quiz_module.start_session(user.id, chat_id, questions, title, "pro", timer)','session = quiz_module.start_session(user.id, chat_id, questions, title, "highlevel", timer)')
 rep('supabase_sync.py','def record_answer(telegram_user_id: int, chat_id: int, username: str, name: str, is_correct: bool, topic: str) -> dict:','def record_answer(telegram_user_id: int, chat_id: int, username: str, name: str, is_correct: bool, topic: str, correct_score: int = 20, wrong_score: int = -10) -> dict:')
 rep('supabase_sync.py','"p_is_correct": bool(is_correct), "p_topic": (topic or "Quiz")[:250]','"p_is_correct": bool(is_correct), "p_topic": (topic or "Quiz")[:250], "p_correct_score": int(correct_score), "p_wrong_score": int(wrong_score)')
-print('RATHOD AI, scoring and admin console patches applied.')
+
+# python-telegram-bot returns a tuple from get_my_commands(); normalize it before concatenating.
+rep('rathod_ai.py','await application.bot.set_my_commands(existing + [x for x in additions if x.command not in known])','await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])')
+rep('admin_console.py','await application.bot.set_my_commands(existing + [x for x in additions if x.command not in known])','await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])')
+print('RATHOD AI, scoring, admin console and startup patches applied.')
