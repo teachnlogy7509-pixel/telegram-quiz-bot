@@ -10,6 +10,8 @@ from google.genai import types as genai_types
 from telegram import BotCommand
 from telegram.ext import CommandHandler, ContextTypes
 
+import supabase_sync
+
 
 _INSTALLED = False
 
@@ -203,7 +205,7 @@ def _target_chat(update) -> int | None:
         return None
 
 
-async def _cmd_notify(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
+async def _cmd_notify(update, context, *, admin_ids):
     if not _admin(update, admin_ids):
         await update.effective_message.reply_text("⛔️ केवल Admin notification भेज सकता है।")
         return
@@ -222,7 +224,7 @@ async def _cmd_notify(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
     await update.effective_message.reply_text("✅ Notification group में भेज दिया गया।")
 
 
-async def _cmd_coupon(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
+async def _cmd_coupon(update, context, *, admin_ids):
     if not _admin(update, admin_ids):
         await update.effective_message.reply_text("⛔️ केवल Admin coupon announcement भेज सकता है।")
         return
@@ -243,6 +245,54 @@ async def _cmd_coupon(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
     await update.effective_message.reply_text(f"✅ Coupon `{code}` group में भेज दिया गया।", parse_mode="Markdown")
 
 
+async def _cmd_bonusxp(update, context, *, admin_ids):
+    """Grant a logged, bounded XP bonus to a linked Telegram user or app email."""
+    if not _admin(update, admin_ids):
+        await update.effective_message.reply_text("⛔️ केवल Admin bonus XP भेज सकता है।")
+        return
+    args = list(context.args or [])
+    if len(args) < 3:
+        await update.effective_message.reply_text(
+            "Use: /bonusxp <telegram_user_id|app_email> <amount> <reason>\n"
+            "Example: /bonusxp 123456789 100 PYQ contest winner\n"
+            "Example: /bonusxp student@example.com 50 Welcome bonus"
+        )
+        return
+    target = args[0].strip()
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await update.effective_message.reply_text("❌ XP amount whole number hona chahiye, jaise 100.")
+        return
+    reason = " ".join(args[2:]).strip()
+    if amount < 1 or amount > 10000:
+        await update.effective_message.reply_text("❌ Bonus XP 1 se 10000 ke beech hona chahiye.")
+        return
+    if len(reason) < 3 or len(reason) > 300:
+        await update.effective_message.reply_text("❌ Reason 3 se 300 characters ka hona chahiye.")
+        return
+    try:
+        result = supabase_sync.grant_bonus_xp(
+            target=target,
+            amount=amount,
+            reason=reason,
+            admin_telegram_user_id=int(update.effective_user.id),
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ Bonus XP failed: {str(exc)[:240]}")
+        return
+    if not result.get("success"):
+        await update.effective_message.reply_text(f"❌ {result.get('error', 'User not found or sync failed.')}")
+        return
+    await update.effective_message.reply_text(
+        "✅ Bonus XP sent successfully.\n"
+        f"Target: {target}\n"
+        f"Added: +{result.get('amount', amount)} XP\n"
+        f"New XP: {result.get('new_xp', 'updated')}\n"
+        f"Reason: {reason}"
+    )
+
+
 async def install(application, db_module, quiz_module, vip_commands, admin_ids):
     """Register the additive VIP features without replacing existing handlers."""
     global _INSTALLED
@@ -256,6 +306,7 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
     application.add_handler(CommandHandler("highlevel", partial(_cmd_highlevel, db_module=db_module, quiz_module=quiz_module, vip_commands=vip_commands)))
     application.add_handler(CommandHandler("notify", partial(_cmd_notify, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("coupon", partial(_cmd_coupon, admin_ids=admin_ids)))
+    application.add_handler(CommandHandler("bonusxp", partial(_cmd_bonusxp, admin_ids=admin_ids)))
 
     existing = await application.bot.get_my_commands()
     known = {item.command for item in existing}
@@ -267,5 +318,6 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
         BotCommand("highlevel", "High-level unique quiz"),
         BotCommand("notify", "Admin group notification"),
         BotCommand("coupon", "Admin coupon announcement"),
+        BotCommand("bonusxp", "Admin bonus XP"),
     ]
     await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
