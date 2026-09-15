@@ -29,7 +29,7 @@ def token():
     return str(data["access_token"])
 
 def drive(method,url,access,body=None,content_type=None):
-    headers={"Authorization":f"Bearer {access}"};
+    headers={"Authorization":f"Bearer {access}"}
     if content_type: headers["Content-Type"]=content_type
     with request.urlopen(request.Request(url,data=body,headers=headers,method=method),timeout=60) as r:
         text=r.read().decode(); return json.loads(text) if text else {}
@@ -58,13 +58,15 @@ def extract(row):
     if not q or not isinstance(opts,list) or len(opts)!=4:return None
     try: correct=int(p.get("correct_index")) if p.get("correct_index") is not None else None
     except (TypeError,ValueError): correct=None
-    return {"question":q,"options":[str(x) for x in opts],"correct_index":correct,"explanation":str(p.get("explanation") or ""),"mode":str(p.get("mode") or "Quiz")}
+    return {"question":q,"options":[str(x) for x in opts],"correct_index":correct,"mode":str(p.get("mode") or "Quiz")}
 
 def make_pdf(title,rows,answers):
     out=io.BytesIO(); doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm); styles=getSampleStyleSheet(); styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontSize=8.5,leading=11)); styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4)); story=[Paragraph(escape(title),styles["Title"]),Spacer(1,5*mm),Paragraph(escape(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
     for n,q in enumerate(rows,1):
         story.append(Paragraph(escape(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"])); [story.append(Paragraph(escape(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
-        if answers: story.append(Paragraph(escape("Answer: "+("Not available" if q["correct_index"] is None else chr(65+q["correct_index"]))+" | "+q["explanation"]),styles["RA"]))
+        if answers:
+            answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"])
+            story.append(Paragraph(escape("Answer: "+answer),styles["RA"]))
     doc.build(story); return out.getvalue()
 
 def rows_for(start,end):
