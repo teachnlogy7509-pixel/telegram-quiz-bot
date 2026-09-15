@@ -26,6 +26,7 @@ import persistent_scores
 import app_update_notifier
 import vip_commands
 import vip_scheduler
+import rathod_ai
 import multi_provider
 import premium_hub
 import scheduler as sched_module
@@ -782,6 +783,7 @@ async def _post_init(application: Application):
     vip_scheduler.init_scheduler(application)
     app_update_notifier.init(application)
     await premium_hub.init_commands(application)
+    await rathod_ai.install(application, db, quiz_module, vip_commands, ADMIN_IDS)
 
 
 
