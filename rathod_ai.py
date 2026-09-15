@@ -11,6 +11,8 @@ from telegram import BotCommand
 from telegram.ext import CommandHandler, ContextTypes
 
 
+_INSTALLED = False
+
 APP_KNOWLEDGE = """
 RATHOD HUB is Ashish Rathod's NEET preparation ecosystem.
 Verified app areas: Home dashboard; AI Doubt with RATHOD Guide and AI Tutor Pro;
@@ -30,6 +32,18 @@ coupons and PW content need internet; focus snapshots, drafts and Offline Librar
 can work offline. RATHOD HUB does not bypass PW purchases. Daily Formula is not an
 active feature and must not be suggested.
 """.strip()
+
+
+def _is_active(update, db_module) -> bool:
+    chat = update.effective_chat
+    if not chat or db_module.is_bot_active(chat.id):
+        return True
+    if update.effective_message:
+        awaitable = update.effective_message.reply_text(
+            "⏸️ Bot अभी इस chat में PAUSED है। Admin `/on` भेजकर इसे चालू कर सकता है।"
+        )
+        return awaitable
+    return False
 
 
 def _admin(update, admin_ids) -> bool:
@@ -214,7 +228,7 @@ async def _cmd_notify(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
         await update.effective_message.reply_text("Use: `/notify आपका message` या किसी message को reply करके `/notify` भेजें।")
         return
     if target is None:
-        await update.effective_message.reply_text("❌ Target group नहीं मिला। Group में command चलाएँ या Railway में NOTIFY_CHAT_ID सेट करें।")
+        await update.effective_message.reply_text("❌ Target group नहीं मिला। Group में command चलाएँ या Railway में APP_UPDATE_CHAT_ID सेट करें।")
         return
     await context.bot.send_message(chat_id=target, text="📢 RATHOD HUB NOTIFICATION\n\n" + text)
     await update.effective_message.reply_text("✅ Notification group में भेज दिया गया।")
@@ -229,7 +243,7 @@ async def _cmd_coupon(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
     note = " ".join(args).strip() or "RATHOD HUB premium features unlock करने के लिए redeem करें।"
     target = _target_chat(update)
     if target is None:
-        await update.effective_message.reply_text("❌ Target group नहीं मिला। Group में command चलाएँ या Railway में NOTIFY_CHAT_ID सेट करें।")
+        await update.effective_message.reply_text("❌ Target group नहीं मिला। Group में command चलाएँ या Railway में APP_UPDATE_CHAT_ID सेट करें।")
         return
     text = (
         "🎁 RATHOD HUB PREMIUM COUPON\n\n"
@@ -243,9 +257,10 @@ async def _cmd_coupon(update, context: ContextTypes.DEFAULT_TYPE, *, admin_ids):
 
 async def install(application, db_module, quiz_module, vip_commands, admin_ids):
     """Register the additive VIP features without replacing existing handlers."""
-    if getattr(application, "_rathod_ai_installed", False):
+    global _INSTALLED
+    if _INSTALLED:
         return
-    application._rathod_ai_installed = True
+    _INSTALLED = True
     application.add_handler(CommandHandler("guide", partial(_cmd_ai, mode="guide", db_module=db_module, quiz_module=quiz_module)))
     application.add_handler(CommandHandler("ask", partial(_cmd_ai, mode="guide", db_module=db_module, quiz_module=quiz_module)))
     application.add_handler(CommandHandler("tutor", partial(_cmd_ai, mode="tutor", db_module=db_module, quiz_module=quiz_module)))
