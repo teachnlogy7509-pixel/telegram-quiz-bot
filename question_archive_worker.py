@@ -2,7 +2,6 @@
 from __future__ import annotations
 import io,json,logging,os,re,time
 from datetime import datetime,timedelta,timezone
-from glob import glob
 from html import escape
 from urllib import parse,request
 from reportlab.lib.pagesizes import A4
@@ -18,53 +17,46 @@ CLIENT_ID=os.getenv("GOOGLE_CLIENT_ID","").strip(); CLIENT_SECRET=os.getenv("GOO
 NOTES_FOLDER=os.getenv("DRIVE_FOLDER_QUESTION_NOTES","").strip(); TESTS_FOLDER=os.getenv("DRIVE_FOLDER_QUESTION_TESTS","").strip(); POLL_SECONDS=max(60,int(os.getenv("ARCHIVE_POLL_SECONDS","120")))
 FONT_NAME="RathodDevanagari"; FONT_PATH="/tmp/NotoSansDevanagari-Regular.ttf"
 
-def _valid_ttf(path):
-    if not path or not os.path.isfile(path) or os.path.getsize(path) < 10000:
-        return False
-    with open(path,"rb") as fh:magic=fh.read(4)
-    return magic in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1")
-
 def ensure_hindi_font():
-    """Use an installed Noto font first, then download it from maintained mirrors."""
-    if FONT_NAME in pdfmetrics.getRegisteredFontNames():
-        return FONT_NAME
-    candidates=[
-        os.getenv("HINDI_FONT_PATH","").strip(),FONT_PATH,
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf",
-    ]
-    candidates.extend(glob("/nix/store/*noto-fonts*/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"))
-    candidates.extend(glob("/nix/store/*noto-fonts*/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf"))
-    candidates.extend(glob("/nix/store/*/share/fonts/**/*NotoSansDevanagari*Regular*.ttf",recursive=True))
-    for path in candidates:
-        if _valid_ttf(path):
-            pdfmetrics.registerFont(TTFont(FONT_NAME,path));log.info("Hindi PDF font ready: %s",path);return FONT_NAME
-    if os.path.exists(FONT_PATH):os.remove(FONT_PATH)
-    urls=[
-        "https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf",
-        "https://github.com/notofonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf",
-        "https://cdn.jsdelivr.net/gh/notofonts/noto-fonts@main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf",
-    ]
-    errors=[]
-    for url in urls:
-        try:
-            req=request.Request(url,headers={"User-Agent":"RATHOD-HUB-Archive/1.1"})
-            with request.urlopen(req,timeout=60) as response:data=response.read()
-            if len(data)<10000 or data[:4] not in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1"):raise RuntimeError("response is not a TTF")
-            with open(FONT_PATH,"wb") as fh:fh.write(data)
-            pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH));log.info("Hindi PDF font downloaded: %s",url);return FONT_NAME
-        except Exception as exc:errors.append(f"{url}: {exc}")
-    raise RuntimeError("Noto Sans Devanagari unavailable; "+" | ".join(errors)[-500:])
-
-def mixed_pdf_text(value):
-    """Render Devanagari with Noto and keep Latin labels/numbers in Helvetica."""
-    safe=escape(str(value))
-    return re.sub(r"[\u0900-\u097F\u200C\u200D]+",lambda m:f'<font name="{FONT_NAME}">{m.group(0)}</font>',safe)
+    """Install a real TTF before building the PDF; never silently use Helvetica for Hindi."""
+    try:
+        if FONT_NAME in pdfmetrics.getRegisteredFontNames():
+            return FONT_NAME
+        def valid_ttf(path):
+            if not os.path.exists(path) or os.path.getsize(path) < 10000:
+                return False
+            with open(path,"rb") as fh: magic=fh.read(4)
+            return magic in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1")
+        if os.path.exists(FONT_PATH) and not valid_ttf(FONT_PATH):
+            os.remove(FONT_PATH)
+        if not os.path.exists(FONT_PATH):
+            urls=[
+                "https://github.com/openmaptiles/fonts/raw/refs/heads/master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                "https://raw.githubusercontent.com/openmaptiles/fonts/master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                "https://cdn.jsdelivr.net/gh/openmaptiles/fonts@master/noto-sans/NotoSansDevanagari-Regular.ttf",
+            ]
+            last=None
+            for url in urls:
+                try:
+                    req=request.Request(url,headers={"User-Agent":"RATHOD-HUB-Archive/1.0"})
+                    with request.urlopen(req,timeout=60) as response:data=response.read()
+                    if len(data)<10000 or data[:4] not in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1"):
+                        raise RuntimeError("downloaded response is not a TTF")
+                    with open(FONT_PATH,"wb") as fh:fh.write(data)
+                    break
+                except Exception as exc:
+                    last=exc
+            if not os.path.exists(FONT_PATH) or not valid_ttf(FONT_PATH):
+                raise RuntimeError("Noto Sans Devanagari TTF download failed: "+str(last)[:120])
+        pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH));log.info("Hindi PDF font ready: %s",FONT_PATH);return FONT_NAME
+    except Exception as exc:
+        log.exception("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]);return "Helvetica"
 
 def rest(method,table,params=None,body=None):
     if not SUPA_URL or not SUPA_KEY:raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     url=f"{SUPA_URL}/rest/v1/{table}"+("?"+parse.urlencode(params,safe="(),.*") if params else "");headers={"apikey":SUPA_KEY,"Authorization":f"Bearer {SUPA_KEY}","Content-Type":"application/json","Accept":"application/json"};data=None if body is None else json.dumps(body).encode()
-    with request.urlopen(request.Request(url,data=data,headers=headers,method=method),timeout=30) as r:text=r.read().decode();return json.loads(text) if text else None
+    with request.urlopen(request.Request(url,data=data,headers=headers,method=method),timeout=30) as r:
+        text=r.read().decode();return json.loads(text) if text else None
 
 def token():
     if not all((CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN)):raise RuntimeError("Google Drive OAuth variables are missing")
@@ -76,20 +68,23 @@ def token():
 def drive(method,url,access,body=None,content_type=None):
     headers={"Authorization":f"Bearer {access}"}
     if content_type:headers["Content-Type"]=content_type
-    with request.urlopen(request.Request(url,data=body,headers=headers,method=method),timeout=60) as r:text=r.read().decode();return json.loads(text) if text else {}
+    with request.urlopen(request.Request(url,data=body,headers=headers,method=method),timeout=60) as r:
+        text=r.read().decode();return json.loads(text) if text else {}
 
 def find_file(access,folder,name):
     safe=name.replace("'","\\'");q=f"'{folder}' in parents and name = '{safe}' and trashed = false";data=drive("GET","https://www.googleapis.com/drive/v3/files?"+parse.urlencode({"q":q,"fields":"files(id,name,webViewLink)","pageSize":"10"}),access);files=data.get("files") or [];return files[0] if files else None
 
 def upload_or_update(access,folder,name,pdf):
     old=find_file(access,folder,name)
-    if old:data=drive("PATCH","https://www.googleapis.com/upload/drive/v3/files/"+str(old["id"])+"?uploadType=media&fields=id,name,webViewLink",access,pdf,"application/pdf");file_id=str(data.get("id") or old["id"])
+    if old:
+        data=drive("PATCH","https://www.googleapis.com/upload/drive/v3/files/"+str(old["id"])+"?uploadType=media&fields=id,name,webViewLink",access,pdf,"application/pdf");file_id=str(data.get("id") or old["id"])
     else:
         boundary="rathodarchiveboundary";meta=json.dumps({"name":name,"parents":[folder]}).encode();body=b"--"+boundary.encode()+b"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"+meta+b"\r\n--"+boundary.encode()+b"\r\nContent-Type: application/pdf\r\n\r\n"+pdf+b"\r\n--"+boundary.encode()+b"--\r\n";data=drive("POST","https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",access,body,"multipart/related; boundary="+boundary);file_id=str(data.get("id") or "")
     if not file_id:raise RuntimeError("Drive did not return a file ID")
     return "https://drive.google.com/file/d/"+file_id+"/view?usp=sharing"
 
-def window(now):start=now.replace(day=((now.day-1)//4)*4+1,hour=0,minute=0,second=0,microsecond=0);return start,start+timedelta(days=4)
+def window(now):
+    start=now.replace(day=((now.day-1)//4)*4+1,hour=0,minute=0,second=0,microsecond=0);return start,start+timedelta(days=4)
 
 def allowed_source(row):
     p=row.get("payload") if isinstance(row.get("payload"),dict) else {};text=" ".join(str(p.get(k,"")) for k in ("source","mode","quiz_name","event_type")).lower().replace("_"," ")
@@ -109,10 +104,11 @@ def extract(row):
     return {"question":q,"options":[str(x) for x in opts],"correct_index":correct,"mode":str(p.get("mode") or "Quiz")}
 
 def make_pdf(title,rows,answers):
-    ensure_hindi_font();out=io.BytesIO();doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm);styles=getSampleStyleSheet();styles.add(ParagraphStyle(name="RATitle",parent=styles["Title"],fontName="Helvetica-Bold"));styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontName="Helvetica",fontSize=8.5,leading=12));styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontName="Helvetica-Bold",fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4));story=[Paragraph(mixed_pdf_text(title),styles["RATitle"]),Spacer(1,5*mm),Paragraph(mixed_pdf_text(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
+    font=ensure_hindi_font();out=io.BytesIO();doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=15*mm,bottomMargin=15*mm);styles=getSampleStyleSheet();styles.add(ParagraphStyle(name="RATitle",parent=styles["Title"],fontName=font));styles.add(ParagraphStyle(name="RA",parent=styles["BodyText"],fontName=font,fontSize=8.5,leading=12));styles.add(ParagraphStyle(name="RQ",parent=styles["Heading3"],fontName=font,fontSize=10.5,leading=14,spaceBefore=8,spaceAfter=4));story=[Paragraph(escape(title),styles["RATitle"]),Spacer(1,5*mm),Paragraph(escape(f"Questions: {len(rows)} | RATHOD HUB archive"),styles["RA"])]
     for n,q in enumerate(rows,1):
-        story.append(Paragraph(mixed_pdf_text(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"]));[story.append(Paragraph(mixed_pdf_text(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
-        if answers:answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"]);story.append(Paragraph(mixed_pdf_text("Answer: "+answer),styles["RA"]))
+        story.append(Paragraph(escape(f"{n}. [{q['mode']}] {q['question']}"),styles["RQ"]));[story.append(Paragraph(escape(f"{chr(65+i)}. {o}"),styles["RA"])) for i,o in enumerate(q["options"])]
+        if answers:
+            answer="Not available" if q["correct_index"] is None else chr(65+q["correct_index"]);story.append(Paragraph(escape("Answer: "+answer),styles["RA"]))
     doc.build(story);return out.getvalue()
 
 def rows_for(start,end):
