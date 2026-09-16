@@ -1,14 +1,17 @@
-import re
 from pathlib import Path
 
 song = Path('song_library_worker.py')
 if song.exists():
     source = song.read_text()
-    file_id_expr = chr(123) + 'file_id' + chr(125)
+    left = chr(123)
+    right = chr(125)
+    file_id_expr = left + 'file_id' + right
     good_permission = 'f"https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
     good_view = 'f"https://drive.google.com/file/d/' + file_id_expr + '/view?usp=sharing"'
-    source = re.sub(r'f"[{}]+https://www\\.googleapis\\.com/drive/v3/files/\\{file_id\\}[{}]+/permissions\\?fields=id"', good_permission, source)
-    source = re.sub(r'f"[{}]+https://drive\\.google\\.com/file/d/\\{file_id\\}[{}]+/view\\?usp=sharing"', good_view, source)
+    bad_permission = 'f"' + left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2 + '/permissions?fields=id"'
+    bad_view = 'f"' + left * 2 + 'https://drive.google.com/file/d/' + file_id_expr + right * 2 + '/view?usp=sharing"'
+    source = source.replace(bad_permission, good_permission)
+    source = source.replace(bad_view, good_view)
     song.write_text(source)
 
 worker = Path('question_archive_worker.py')
