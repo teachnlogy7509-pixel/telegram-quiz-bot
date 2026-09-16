@@ -40,14 +40,14 @@ replace_once(
     "Supabase error details",
 )
 
-# The original worker had literal braces around the full URL. Strip only those
-# braces and leave the f-string's {file_id} interpolation intact.
-source = source.replace(
-    'f"{{https://www.googleapis.com/drive/v3/files/',
-    'f"https://www.googleapis.com/drive/v3/files/',
-)
+# Correct literal braces around the Google Drive permission URLs.
+source = source.replace('f"{{https://www.googleapis.com/drive/v3/files/', 'f"https://www.googleapis.com/drive/v3/files/')
 source = source.replace("{file_id}}}/permissions", "{file_id}/permissions")
 source = source.replace("{file_id}}/permissions", "{file_id}/permissions")
+
+# rh_bridge_events allows only immediate or digest delivery modes.
+source = source.replace('"delivery_mode":"archive"', '"delivery_mode":"digest"')
+source = source.replace('"delivery_mode": "archive"', '"delivery_mode": "digest"')
 
 replace_once(
     'except Exception as exc:\n        log.exception("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]);return "Helvetica"',
@@ -61,4 +61,4 @@ replace_once(
 )
 
 path.write_text(source)
-print("Devanagari shaping, Drive URL, and archive resilience patches applied")
+print("Devanagari shaping, valid archive mode, and resilient PDF sync enabled")
