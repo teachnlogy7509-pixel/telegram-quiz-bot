@@ -21,5 +21,32 @@ if path.exists():
         'f"{number}. [{question[\'mode\']}] {question[\'question\']}"',
         'f"{number}. [{pdf_mode_label(question[\'mode\'])}] {question[\'question\']}"',
     )
+
+    # Preserve the originating quiz/topic so Sakhi can search archive PDFs.
+    source = source.replace(
+        '"mode": str(payload.get("mode") or "Quiz"),',
+        '"mode": str(payload.get("mode") or "Quiz"),\n        "topic": str(payload.get("quiz_name") or payload.get("topic") or payload.get("mode") or "Quiz"),',
+        1,
+    )
+    source = source.replace(
+        'def publish_archive_links(label: str, notes_url: str, test_url: str) -> None:',
+        'def publish_archive_links(label: str, notes_url: str, test_url: str, topics: list[str] | None = None) -> None:',
+        1,
+    )
+    source = source.replace(
+        '"updated_at": datetime.now(timezone.utc).isoformat(),\n    }',
+        '"updated_at": datetime.now(timezone.utc).isoformat(),\n        "topics": sorted({str(topic).strip() for topic in (topics or []) if str(topic).strip()}),\n        "search_text": " ".join(sorted({str(topic).strip() for topic in (topics or []) if str(topic).strip()})),\n    }',
+        1,
+    )
+    if 'topics = sorted({str(row.get("topic")' not in source:
+        source = source.replace(
+            '    access = token()\n',
+            '    topics = sorted({str(row.get("topic") or "").strip() for row in rows if str(row.get("topic") or "").strip()})\n    access = token()\n',
+            1,
+        )
+    source = source.replace(
+        'publish_archive_links(label, notes_url, test_url)',
+        'publish_archive_links(label, notes_url, test_url, topics)',
+    )
     path.write_text(source)
-    print("PDF worker uses Hindi generic labels and keeps biology names intact")
+    print("PDF worker keeps topic metadata for /pdfglist search")
