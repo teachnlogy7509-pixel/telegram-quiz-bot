@@ -4,11 +4,11 @@ song = Path('song_library_worker.py')
 if song.exists():
     source = song.read_text()
     source = source.replace(
-        'f"{https://www.googleapis.com/drive/v3/files/{file_id}}}/permissions?fields=id"',
+        'f"{{https://www.googleapis.com/drive/v3/files/{file_id}}}/permissions?fields=id"',
         'f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id"',
     )
     source = source.replace(
-        'f"{https://drive.google.com/file/d/{file_id}}}/view?usp=sharing"',
+        'f"{{https://drive.google.com/file/d/{file_id}}}/view?usp=sharing"',
         'f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"',
     )
     song.write_text(source)
