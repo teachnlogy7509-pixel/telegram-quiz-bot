@@ -1,6 +1,7 @@
-"""Build four-day Hindi Notes/Test PDFs from Telegram quiz events and keep them in Drive."""
+"""Build immutable five-day Hindi Notes/Test PDFs from Telegram quiz events."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -29,6 +30,8 @@ REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN", "").strip()
 NOTES_FOLDER = os.getenv("DRIVE_FOLDER_QUESTION_NOTES", "").strip()
 TESTS_FOLDER = os.getenv("DRIVE_FOLDER_QUESTION_TESTS", "").strip()
 POLL_SECONDS = max(60, int(os.getenv("ARCHIVE_POLL_SECONDS", "120")))
+WINDOW_DAYS = 5
+WINDOW_ANCHOR = datetime(2026, 1, 1, tzinfo=timezone.utc)
 FONT_NAME = "RathodDevanagari"
 FONT_PATH = next(
     (
@@ -85,7 +88,7 @@ def download_ttf(path: str, urls: list[str]) -> None:
 
 
 def ensure_hindi_font() -> str:
-    """Load a real Devanagari font; never silently produce a broken Hindi PDF."""
+    """Load and register a real Devanagari font; never silently break Hindi."""
     if FONT_NAME in pdfmetrics.getRegisteredFontNames():
         return FONT_NAME
     try:
@@ -101,14 +104,21 @@ def ensure_hindi_font() -> str:
                 ],
             )
         pdfmetrics.registerFont(TTFont(FONT_NAME, FONT_PATH, shapable=True))
+        pdfmetrics.registerFontFamily(
+            FONT_NAME,
+            normal=FONT_NAME,
+            bold=FONT_NAME,
+            italic=FONT_NAME,
+            boldItalic=FONT_NAME,
+        )
         log.info("Hindi PDF font ready: %s", FONT_PATH)
         return FONT_NAME
     except Exception as exc:
-        raise RuntimeError("Hindi Devanagari font unavailable; refusing to create an incorrectly rendered PDF") from exc
+        raise RuntimeError("Hindi Devanagari font unavailable; refusing to create a broken PDF") from exc
 
 
 def ensure_latin_font() -> str:
-    """Load a Latin fallback so English, numbers and scientific symbols are not boxes."""
+    """Load a Latin fallback so English, numbers and scientific symbols remain readable."""
     if LATIN_FONT_NAME in pdfmetrics.getRegisteredFontNames():
         return LATIN_FONT_NAME
     try:
@@ -127,11 +137,11 @@ def ensure_latin_font() -> str:
         log.info("Latin fallback font ready: %s", LATIN_FONT_PATH)
         return LATIN_FONT_NAME
     except Exception as exc:
-        raise RuntimeError("Latin fallback font unavailable; refusing to create a PDF with missing glyphs") from exc
+        raise RuntimeError("Latin fallback font unavailable; refusing to create missing-glyph PDF") from exc
 
 
 def pdf_text(value: object) -> str:
-    """Use Devanagari for Hindi and a full Latin font for English/numbers/symbols."""
+    """Split mixed Hindi/Latin text without breaking Devanagari shaping."""
     text = str(value or "")
     if not text:
         return ""
@@ -151,7 +161,8 @@ def pdf_text(value: object) -> str:
 
     for char in text:
         code = ord(char)
-        is_latin = not (0x0900 <= code <= 0x097F)
+        # Keep Devanagari combining controls in the Hindi run.
+        is_latin = not (0x0900 <= code <= 0x097F or code in (0x200C, 0x200D))
         if current_latin is not None and is_latin != current_latin:
             flush()
         current_latin = is_latin
@@ -247,38 +258,34 @@ def ensure_group_access(access: str, file_id: str) -> None:
 
 
 def upload_or_update(access: str, folder: str, name: str, pdf: bytes) -> str:
+    """Create once; never replace a file during its five-day window."""
     old = find_file(access, folder, name)
     if old:
-        data = drive(
-            "PATCH",
-            "https://www.googleapis.com/upload/drive/v3/files/" + str(old["id"]) + "?uploadType=media&fields=id,name,webViewLink",
-            access,
-            pdf,
-            "application/pdf",
-        )
-        file_id = str(data.get("id") or old["id"])
-    else:
-        boundary = "rathodarchiveboundary"
-        metadata = json.dumps({"name": name, "parents": [folder]}).encode()
-        body = (
-            b"--" + boundary.encode() + b"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
-            + metadata
-            + b"\r\n--"
-            + boundary.encode()
-            + b"\r\nContent-Type: application/pdf\r\n\r\n"
-            + pdf
-            + b"\r\n--"
-            + boundary.encode()
-            + b"--\r\n"
-        )
-        data = drive(
-            "POST",
-            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
-            access,
-            body,
-            "multipart/related; boundary=" + boundary,
-        )
-        file_id = str(data.get("id") or "")
+        file_id = str(old["id"])
+        ensure_group_access(access, file_id)
+        return "https://drive.google.com/file/d/" + file_id + "/view?usp=sharing"
+
+    boundary = "rathodarchiveboundary"
+    metadata = json.dumps({"name": name, "parents": [folder]}).encode()
+    body = (
+        b"--" + boundary.encode() + b"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+        + metadata
+        + b"\r\n--"
+        + boundary.encode()
+        + b"\r\nContent-Type: application/pdf\r\n\r\n"
+        + pdf
+        + b"\r\n--"
+        + boundary.encode()
+        + b"--\r\n"
+    )
+    data = drive(
+        "POST",
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+        access,
+        body,
+        "multipart/related; boundary=" + boundary,
+    )
+    file_id = str(data.get("id") or "")
     if not file_id:
         raise RuntimeError("Drive did not return a file ID")
     ensure_group_access(access, file_id)
@@ -286,11 +293,12 @@ def upload_or_update(access: str, folder: str, name: str, pdf: bytes) -> str:
 
 
 def publish_archive_links(label: str, notes_url: str, test_url: str) -> None:
-    """Store one latest link record so Sakhi can answer /archivepdf."""
+    """Store the immutable five-day links so Sakhi can answer /archivepdf."""
     payload = {
         "label": label,
         "notes_url": notes_url or "",
         "test_url": test_url or "",
+        "window_days": WINDOW_DAYS,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     rows = rest(
@@ -311,8 +319,9 @@ def publish_archive_links(label: str, notes_url: str, test_url: str) -> None:
 
 
 def window(now: datetime):
-    start = now.replace(day=((now.day - 1) // 4) * 4 + 1, hour=0, minute=0, second=0, microsecond=0)
-    return start, start + timedelta(days=4)
+    elapsed_days = max(0, (now - WINDOW_ANCHOR).days)
+    start = WINDOW_ANCHOR + timedelta(days=(elapsed_days // WINDOW_DAYS) * WINDOW_DAYS)
+    return start, start + timedelta(days=WINDOW_DAYS)
 
 
 def allowed_source(row: dict) -> bool:
@@ -350,11 +359,32 @@ def extract(row: dict):
     }
 
 
+def pdf_mode_label(mode: object) -> str:
+    value = str(mode or "Quiz").strip()
+    low = value.casefold()
+    if low in {"daily 9 pm", "daily 9pm"}:
+        return "दैनिक 9 PM"
+    if low in {"live quiz", "live_quiz"}:
+        return "लाइव क्विज़"
+    if low in {"quiz", "practice", "study practice"}:
+        return {"quiz": "क्विज़", "practice": "अभ्यास", "study practice": "अध्ययन अभ्यास"}[low]
+    if low == "pdf" or low.startswith("pdf:"):
+        return "पीडीएफ"
+    return value
+
+
 def make_pdf(title: str, rows: list[dict], answers: bool) -> bytes:
     font = ensure_hindi_font()
     ensure_latin_font()
     output = io.BytesIO()
-    document = SimpleDocTemplate(output, pagesize=A4, rightMargin=16 * mm, leftMargin=16 * mm, topMargin=15 * mm, bottomMargin=15 * mm)
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+    )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="RATitle", parent=styles["Title"], fontName=font, shaping=1))
     styles.add(ParagraphStyle(name="RA", parent=styles["BodyText"], fontName=font, fontSize=8.5, leading=12, shaping=1))
@@ -366,7 +396,7 @@ def make_pdf(title: str, rows: list[dict], answers: bool) -> bytes:
     ]
     option_letters = ("क", "ख", "ग", "घ")
     for number, question in enumerate(rows, 1):
-        story.append(Paragraph(pdf_text(f"{number}. [{question['mode']}] {question['question']}"), styles["RQ"]))
+        story.append(Paragraph(pdf_text(f"{number}. [{pdf_mode_label(question['mode'])}] {question['question']}"), styles["RQ"]))
         for index, option in enumerate(question["options"]):
             story.append(Paragraph(pdf_text(f"{option_letters[index]}. {option}"), styles["RA"]))
         if answers:
@@ -403,14 +433,18 @@ def run_once() -> None:
         log.info("No allowed questions in %s-%s", start.date(), (end - timedelta(days=1)).date())
         return
     access = token()
-    label = start.strftime("%d-%b") + "_to_" + (end - timedelta(days=1)).strftime("%d-%b-%Y")
+    window_key = start.strftime("%Y%m%d") + "_" + (end - timedelta(days=1)).strftime("%Y%m%d")
+    unique_tag = hashlib.sha1(("RATHOD-HUB:" + window_key).encode("utf-8")).hexdigest()[:10].upper()
+    label = "RATHOD HUB | " + start.strftime("%d-%b") + "_to_" + (end - timedelta(days=1)).strftime("%d-%b-%Y")
+    notes_name = "RATHOD_HUB_NOTES_" + window_key + "_" + unique_tag + ".pdf"
+    test_name = "RATHOD_HUB_TEST_" + window_key + "_" + unique_tag + ".pdf"
     notes_url = ""
     test_url = ""
     if NOTES_FOLDER:
-        notes_url = upload_or_update(access, NOTES_FOLDER, "Notes_" + label + ".pdf", make_pdf("RATHOD HUB नोट्स - " + label, rows, True))
+        notes_url = upload_or_update(access, NOTES_FOLDER, notes_name, make_pdf("RATHOD HUB नोट्स - " + label, rows, True))
         log.info("Notes PDF: %s", notes_url)
     if TESTS_FOLDER:
-        test_url = upload_or_update(access, TESTS_FOLDER, "Test_" + label + ".pdf", make_pdf("RATHOD HUB टेस्ट प्रश्नपत्र - " + label, rows, False))
+        test_url = upload_or_update(access, TESTS_FOLDER, test_name, make_pdf("RATHOD HUB टेस्ट प्रश्नपत्र - " + label, rows, False))
         log.info("Test PDF: %s", test_url)
     if notes_url or test_url:
         try:
