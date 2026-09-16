@@ -56,5 +56,17 @@ if path.exists():
     if family_anchor in source and 'registerFontFamily(FONT_NAME' not in source:
         source = source.replace(family_anchor, family_replacement, 1)
 
+    # Put the requested identity footer on every page, including pages added
+    # automatically by ReportLab when the question list spans multiple pages.
+    footer_anchor = "def make_pdf(title: str, rows: list[dict], answers: bool) -> bytes:\n"
+    footer_helper = '''def draw_pdf_footer(canvas, doc) -> None:\n    canvas.saveState()\n    canvas.setStrokeColorRGB(0.55, 0.55, 0.55)\n    canvas.setLineWidth(0.35)\n    canvas.line(16 * mm, 11 * mm, A4[0] - 16 * mm, 11 * mm)\n    canvas.setFont(LATIN_FONT_NAME, 7.5)\n    canvas.setFillColorRGB(0.25, 0.25, 0.25)\n    footer = "RATHOD HUB | Admin: Ashish Rathod | NEET | IMPORTANT"\n    canvas.drawString(16 * mm, 6.5 * mm, footer)\n    canvas.drawRightString(A4[0] - 16 * mm, 6.5 * mm, f"Page {doc.page}")\n    canvas.restoreState()\n\n\n'''
+    if footer_anchor in source and 'def draw_pdf_footer(' not in source:
+        source = source.replace(footer_anchor, footer_helper + footer_anchor, 1)
+    source = source.replace(
+        '    document.build(story)\n',
+        '    document.build(story, onFirstPage=draw_pdf_footer, onLaterPages=draw_pdf_footer)\n',
+        1,
+    )
+
     path.write_text(source)
-    print("RATHOD HUB PDFs: Hindi shaping, unique names, immutable five-day windows ready")
+    print("RATHOD HUB PDFs: Hindi shaping, admin footer, unique names, immutable five-day windows ready")
