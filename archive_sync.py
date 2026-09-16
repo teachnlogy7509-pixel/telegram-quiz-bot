@@ -23,22 +23,20 @@ def record_questions(topic: str, mode: str, questions: list[dict]) -> int:
         text = str(question.get("question") or "").strip() if isinstance(question, dict) else ""
         if not text or not isinstance(options, list) or len(options) != 4:
             continue
-        rows.append(
-            {
-                "event_type": "quiz_question",
-                "delivery_mode": "archive",
-                "display_name": "Telegram Quiz",
-                "payload": {
-                    "archive": True,
-                    "source": "telegram",
-                    "mode": str(mode or "Quiz"),
-                    "quiz_name": topic_text,
-                    "question": text,
-                    "options": [str(option) for option in options],
-                    "correct_index": question.get("correct_index"),
-                },
-            }
-        )
+        rows.append({
+            "event_type": "quiz_question",
+            "delivery_mode": "digest",
+            "display_name": "Telegram Quiz",
+            "payload": {
+                "archive": True,
+                "source": "telegram",
+                "mode": str(mode or "Quiz"),
+                "quiz_name": topic_text,
+                "question": text,
+                "options": [str(option) for option in options],
+                "correct_index": question.get("correct_index"),
+            },
+        })
 
     if not rows:
         return 0
