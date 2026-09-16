@@ -8,6 +8,8 @@ import os
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
+import supabase_sync
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,8 +18,14 @@ def _active(update, db_module) -> bool:
     return bool(chat and db_module.is_bot_active(chat.id))
 
 
+def _is_highlevel(session: dict) -> bool:
+    style = str(session.get("style") or "").lower().replace("-", "")
+    topic = str(session.get("topic") or "").lower()
+    return style in {"pro", "highlevel"} or "high-level" in topic or "rathod pro" in topic
+
+
 def install(quiz_module):
-    """Enable up to five Gemini keys and never cut long questions/options."""
+    """Enable five Gemini keys, full poll text and high-level scoring."""
     def api_keys():
         names = ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GEMINI_API_KEY_4", "GEMINI_API_KEY_5"]
         return [os.environ.get(name, "").strip() for name in names if os.environ.get(name, "").strip()]
@@ -65,9 +73,63 @@ def install(quiz_module):
     async def send_group_question(bot, session):
         await send_full_poll(bot, session, group=True)
 
+    async def sync_skip(bot, session, user_id: int, username: str = "", name: str = "Telegram User"):
+        try:
+            if not username or name == "Telegram User":
+                chat = await bot.get_chat(user_id)
+                username = username or getattr(chat, "username", "") or ""
+                name = getattr(chat, "full_name", None) or getattr(chat, "first_name", None) or name
+            await asyncio.to_thread(
+                supabase_sync.record_answer,
+                telegram_user_id=int(user_id),
+                chat_id=int(session["chat_id"]),
+                username=username or "",
+                name=name or "Telegram User",
+                is_correct=False,
+                topic=str(session.get("topic") or "High-Level Quiz") + " [SKIPPED]",
+                correct_score=100,
+                wrong_score=-75,
+            )
+        except Exception as exc:
+            logger.warning("High-level skip score sync failed: %s", str(exc)[:180])
+
+    async def advance_after_timeout(bot, user_id: int, question_index: int):
+        session = quiz_module.active_sessions.get(user_id)
+        timer = session.get("timer", 30) if session else 30
+        await asyncio.sleep(timer + 1)
+        session = quiz_module.active_sessions.get(user_id)
+        if not session or session["current_idx"] != question_index:
+            return
+        if not session["answered_current"]:
+            session["unanswered"] += 1
+            if _is_highlevel(session):
+                session["score"] -= 75
+                await sync_skip(bot, session, user_id)
+            else:
+                session["score"] += getattr(quiz_module, "UNANSWERED_SCORE", 0)
+        await quiz_module._next_or_finish(bot, session)
+
+    async def advance_group_after_timeout(bot, chat_id: int, question_index: int):
+        session = quiz_module.group_sessions.get(chat_id)
+        timer = session.get("timer", 30) if session else 30
+        await asyncio.sleep(timer + 1)
+        session = quiz_module.group_sessions.get(chat_id)
+        if not session or session["current_idx"] != question_index:
+            return
+        if _is_highlevel(session):
+            answered = set(session.get("answered_users") or set())
+            for user_id, stats in list((session.get("user_scores") or {}).items()):
+                if user_id in answered:
+                    continue
+                stats["score"] = int(stats.get("score") or 0) - 75
+                await sync_skip(bot, session, int(user_id), str(stats.get("username") or ""), str(stats.get("name") or "Telegram User"))
+        await quiz_module._next_or_finish_group(bot, session)
+
     quiz_module.send_question = send_question
     quiz_module.send_group_question = send_group_question
-    logger.info("VIP Telegram UI installed with 5-key Gemini rotation")
+    quiz_module._advance_after_timeout = advance_after_timeout
+    quiz_module._advance_group_after_timeout = advance_group_after_timeout
+    logger.info("VIP Telegram UI installed; high-level scoring +100/-50/skip -75")
 
 
 async def cmd_proquiz(update, context, quiz_module, db_module):
@@ -90,7 +152,7 @@ async def cmd_proquiz(update, context, quiz_module, db_module):
     user = update.effective_user
     chat_id = update.effective_chat.id
     db_module.ensure_user(user.id, chat_id, user.username or "", user.full_name or "Telegram User")
-    wait = await update.message.reply_text(f"👑 RATHOD PRO Engine {count} ultra-high-level questions बना रहा है…")
+    wait = await update.message.reply_text(f"👑 RATHOD PRO Engine {count} ultra-high-level questions बना रहा है…\n✅ +100 XP • ❌ −50 XP • ⏭ Skip −75 XP")
     pro_topic = f"""{topic}. RATHOD PRO MODE: Difficulty above standard NEET but every fact must remain NCERT-valid. Make a balanced mix of PYQ-inspired conceptual traps, Assertion–Reason, Statement I/II, multi-statement combinations, match-the-following, exceptions, deep applications and difficult NCERT line-based questions. No vague or out-of-syllabus fact may be required. Long stems are allowed because the bot displays them separately without truncation."""
     try:
         questions = await quiz_module.generate_questions(pro_topic, count, "pro")
@@ -99,12 +161,12 @@ async def cmd_proquiz(update, context, quiz_module, db_module):
         title = f"👑 PRO • {topic}"
         if chat_id < 0:
             session = quiz_module.start_group_session(chat_id, questions, title, timer)
-            await update.message.reply_text(f"👑 *RATHOD PRO QUIZ*\n📚 {topic}\n❓ {count} ultra-level questions", parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(f"👑 *RATHOD PRO QUIZ*\n📚 {topic}\n❓ {count} ultra-level questions\n✅ +100 • ❌ −50 • ⏭ −75 XP", parse_mode=ParseMode.MARKDOWN)
             await quiz_module.send_group_question(context.bot, session)
             session["advance_job"] = asyncio.create_task(quiz_module._advance_group_after_timeout(context.bot, chat_id, 0))
         else:
             session = quiz_module.start_session(user.id, chat_id, questions, title, "pro", timer)
-            await update.message.reply_text(f"👑 *RATHOD PRO QUIZ*\n📚 {topic}\n❓ {count} ultra-level questions", parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(f"👑 *RATHOD PRO QUIZ*\n📚 {topic}\n❓ {count} ultra-level questions\n✅ +100 • ❌ −50 • ⏭ −75 XP", parse_mode=ParseMode.MARKDOWN)
             await quiz_module.send_question(context.bot, session)
             session["advance_job"] = asyncio.create_task(quiz_module._advance_after_timeout(context.bot, user.id, 0))
     except Exception as exc:
