@@ -20,34 +20,24 @@ FONT_NAME="RathodDevanagari"; FONT_PATH="/tmp/NotoSansDevanagari-Regular.ttf"
 def ensure_hindi_font():
     """Install a real TTF before building the PDF; never silently use Helvetica for Hindi."""
     try:
-        if FONT_NAME in pdfmetrics.getRegisteredFontNames():
-            return FONT_NAME
+        if FONT_NAME in pdfmetrics.getRegisteredFontNames():return FONT_NAME
         def valid_ttf(path):
-            if not os.path.exists(path) or os.path.getsize(path) < 10000:
-                return False
-            with open(path,"rb") as fh: magic=fh.read(4)
+            if not os.path.exists(path) or os.path.getsize(path)<10000:return False
+            with open(path,"rb") as fh:magic=fh.read(4)
             return magic in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1")
-        if os.path.exists(FONT_PATH) and not valid_ttf(FONT_PATH):
-            os.remove(FONT_PATH)
+        if os.path.exists(FONT_PATH) and not valid_ttf(FONT_PATH):os.remove(FONT_PATH)
         if not os.path.exists(FONT_PATH):
-            urls=[
-                "https://github.com/openmaptiles/fonts/raw/refs/heads/master/noto-sans/NotoSansDevanagari-Regular.ttf",
-                "https://raw.githubusercontent.com/openmaptiles/fonts/master/noto-sans/NotoSansDevanagari-Regular.ttf",
-                "https://cdn.jsdelivr.net/gh/openmaptiles/fonts@master/noto-sans/NotoSansDevanagari-Regular.ttf",
-            ]
+            urls=["https://github.com/openmaptiles/fonts/raw/refs/heads/master/noto-sans/NotoSansDevanagari-Regular.ttf","https://raw.githubusercontent.com/openmaptiles/fonts/master/noto-sans/NotoSansDevanagari-Regular.ttf","https://cdn.jsdelivr.net/gh/openmaptiles/fonts@master/noto-sans/NotoSansDevanagari-Regular.ttf"]
             last=None
             for url in urls:
                 try:
                     req=request.Request(url,headers={"User-Agent":"RATHOD-HUB-Archive/1.0"})
                     with request.urlopen(req,timeout=60) as response:data=response.read()
-                    if len(data)<10000 or data[:4] not in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1"):
-                        raise RuntimeError("downloaded response is not a TTF")
+                    if len(data)<10000 or data[:4] not in (b"\x00\x01\x00\x00",b"OTTO",b"true",b"typ1"):raise RuntimeError("downloaded response is not a TTF")
                     with open(FONT_PATH,"wb") as fh:fh.write(data)
                     break
-                except Exception as exc:
-                    last=exc
-            if not os.path.exists(FONT_PATH) or not valid_ttf(FONT_PATH):
-                raise RuntimeError("Noto Sans Devanagari TTF download failed: "+str(last)[:120])
+                except Exception as exc:last=exc
+            if not os.path.exists(FONT_PATH) or not valid_ttf(FONT_PATH):raise RuntimeError("Noto Sans Devanagari TTF download failed: "+str(last)[:120])
         pdfmetrics.registerFont(TTFont(FONT_NAME,FONT_PATH));log.info("Hindi PDF font ready: %s",FONT_PATH);return FONT_NAME
     except Exception as exc:
         log.exception("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]);return "Helvetica"
@@ -55,8 +45,7 @@ def ensure_hindi_font():
 def rest(method,table,params=None,body=None):
     if not SUPA_URL or not SUPA_KEY:raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     url=f"{SUPA_URL}/rest/v1/{table}"+("?"+parse.urlencode(params,safe="(),.*") if params else "");headers={"apikey":SUPA_KEY,"Authorization":f"Bearer {SUPA_KEY}","Content-Type":"application/json","Accept":"application/json"};data=None if body is None else json.dumps(body).encode()
-    with request.urlopen(request.Request(url,data=data,headers=headers,method=method),timeout=30) as r:
-        text=r.read().decode();return json.loads(text) if text else None
+    with request.urlopen(request.Request(url,data=data,headers=headers,method=method),timeout=30) as r:text=r.read().decode();return json.loads(text) if text else None
 
 def token():
     if not all((CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN)):raise RuntimeError("Google Drive OAuth variables are missing")
@@ -68,11 +57,18 @@ def token():
 def drive(method,url,access,body=None,content_type=None):
     headers={"Authorization":f"Bearer {access}"}
     if content_type:headers["Content-Type"]=content_type
-    with request.urlopen(request.Request(url,data=body,headers=headers,method=method),timeout=60) as r:
-        text=r.read().decode();return json.loads(text) if text else {}
+    with request.urlopen(request.Request(url,data=body,headers=headers,method=method),timeout=60) as r:text=r.read().decode();return json.loads(text) if text else {}
 
 def find_file(access,folder,name):
     safe=name.replace("'","\\'");q=f"'{folder}' in parents and name = '{safe}' and trashed = false";data=drive("GET","https://www.googleapis.com/drive/v3/files?"+parse.urlencode({"q":q,"fields":"files(id,name,webViewLink)","pageSize":"10"}),access);files=data.get("files") or [];return files[0] if files else None
+
+def ensure_group_access(access,file_id):
+    """Allow Telegram group members with the link to open the PDF."""
+    try:
+        data=drive("GET",f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=permissions(id,type,role)",access)
+        if not any(p.get("type")=="anyone" and p.get("role")=="reader" for p in data.get("permissions",[])):
+            drive("POST",f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id",access,json.dumps({"type":"anyone","role":"reader"}).encode(),"application/json")
+    except Exception as exc:log.warning("Could not enable group link access for %s: %s",file_id,str(exc)[:160])
 
 def upload_or_update(access,folder,name,pdf):
     old=find_file(access,folder,name)
@@ -81,7 +77,17 @@ def upload_or_update(access,folder,name,pdf):
     else:
         boundary="rathodarchiveboundary";meta=json.dumps({"name":name,"parents":[folder]}).encode();body=b"--"+boundary.encode()+b"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"+meta+b"\r\n--"+boundary.encode()+b"\r\nContent-Type: application/pdf\r\n\r\n"+pdf+b"\r\n--"+boundary.encode()+b"--\r\n";data=drive("POST","https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",access,body,"multipart/related; boundary="+boundary);file_id=str(data.get("id") or "")
     if not file_id:raise RuntimeError("Drive did not return a file ID")
+    ensure_group_access(access,file_id)
     return "https://drive.google.com/file/d/"+file_id+"/view?usp=sharing"
+
+def publish_archive_links(label,notes_url,test_url):
+    """Store one latest link record so Sakhi can answer /archivepdf."""
+    payload={"label":label,"notes_url":notes_url or "","test_url":test_url or "","updated_at":datetime.now(timezone.utc).isoformat()}
+    rows=rest("GET","rh_bridge_events",{"select":"id,payload","event_type":"eq.archive_pdf_ready","order":"created_at.desc","limit":"1"}) or []
+    body={"event_type":"archive_pdf_ready","delivery_mode":"archive","display_name":"RATHOD Question Archive","payload":payload}
+    if rows and isinstance(rows[0].get("payload"),dict) and rows[0]["payload"].get("label")==label:
+        rest("PATCH","rh_bridge_events",{"id":f"eq.{rows[0]['id']}"},{"payload":payload})
+    else:rest("POST","rh_bridge_events",body=body)
 
 def window(now):
     start=now.replace(day=((now.day-1)//4)*4+1,hour=0,minute=0,second=0,microsecond=0);return start,start+timedelta(days=4)
@@ -124,9 +130,12 @@ def rows_for(start,end):
 def run_once():
     start,end=window(datetime.now(timezone.utc));rows=rows_for(start,end)
     if not rows:log.info("No allowed questions in %s-%s",start.date(),(end-timedelta(days=1)).date());return
-    access=token();label=start.strftime("%d-%b")+"_to_"+(end-timedelta(days=1)).strftime("%d-%b-%Y")
-    if NOTES_FOLDER:log.info("Notes PDF: %s",upload_or_update(access,NOTES_FOLDER,"Notes_"+label+".pdf",make_pdf("RATHOD HUB Notes - "+label,rows,True)))
-    if TESTS_FOLDER:log.info("Test PDF: %s",upload_or_update(access,TESTS_FOLDER,"Test_"+label+".pdf",make_pdf("RATHOD HUB Test Bank - "+label,rows,False)))
+    access=token();label=start.strftime("%d-%b")+"_to_"+(end-timedelta(days=1)).strftime("%d-%b-%Y");notes_url="";test_url=""
+    if NOTES_FOLDER:
+        notes_url=upload_or_update(access,NOTES_FOLDER,"Notes_"+label+".pdf",make_pdf("RATHOD HUB Notes - "+label,rows,True));log.info("Notes PDF: %s",notes_url)
+    if TESTS_FOLDER:
+        test_url=upload_or_update(access,TESTS_FOLDER,"Test_"+label+".pdf",make_pdf("RATHOD HUB Test Bank - "+label,rows,False));log.info("Test PDF: %s",test_url)
+    if notes_url or test_url:publish_archive_links(label,notes_url,test_url)
 
 def main():
     if not all((SUPA_URL,SUPA_KEY,CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN)):raise SystemExit("Supabase and Google Drive OAuth variables are required")
