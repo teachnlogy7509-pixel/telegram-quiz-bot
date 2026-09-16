@@ -42,52 +42,122 @@ FONT_PATH = next(
     ),
     "/tmp/NotoSansDevanagari-Regular.ttf",
 )
+LATIN_FONT_NAME = "RathodLatin"
+LATIN_FONT_PATH = next(
+    (
+        path
+        for path in (
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+            "/tmp/NotoSans-Regular.ttf",
+        )
+        if os.path.exists(path)
+    ),
+    "/tmp/NotoSans-Regular.ttf",
+)
+
+
+def valid_ttf(path: str) -> bool:
+    if not os.path.exists(path) or os.path.getsize(path) < 10_000:
+        return False
+    with open(path, "rb") as handle:
+        magic = handle.read(4)
+    return magic in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1")
+
+
+def download_ttf(path: str, urls: list[str]) -> None:
+    last_error = None
+    for url in urls:
+        try:
+            req = request.Request(url, headers={"User-Agent": "RATHOD-HUB-Archive/1.0"})
+            with request.urlopen(req, timeout=60) as response:
+                data = response.read()
+            if len(data) < 10_000 or data[:4] not in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1"):
+                raise RuntimeError("downloaded response is not a TTF")
+            with open(path, "wb") as handle:
+                handle.write(data)
+            if valid_ttf(path):
+                return
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"font download failed: {last_error}")
 
 
 def ensure_hindi_font() -> str:
     """Load a real Devanagari font; never silently produce a broken Hindi PDF."""
     if FONT_NAME in pdfmetrics.getRegisteredFontNames():
         return FONT_NAME
-
-    def valid_ttf(path: str) -> bool:
-        if not os.path.exists(path) or os.path.getsize(path) < 10_000:
-            return False
-        with open(path, "rb") as handle:
-            magic = handle.read(4)
-        return magic in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1")
-
     try:
-        if os.path.exists(FONT_PATH) and not valid_ttf(FONT_PATH):
-            if FONT_PATH.startswith("/tmp/"):
-                os.remove(FONT_PATH)
-
+        if os.path.exists(FONT_PATH) and not valid_ttf(FONT_PATH) and FONT_PATH.startswith("/tmp/"):
+            os.remove(FONT_PATH)
         if not os.path.exists(FONT_PATH):
-            urls = [
-                "https://github.com/openmaptiles/fonts/raw/refs/heads/master/noto-sans/NotoSansDevanagari-Regular.ttf",
-                "https://raw.githubusercontent.com/openmaptiles/fonts/master/noto-sans/NotoSansDevanagari-Regular.ttf",
-                "https://cdn.jsdelivr.net/gh/openmaptiles/fonts@master/noto-sans/NotoSansDevanagari-Regular.ttf",
-            ]
-            last_error = None
-            for url in urls:
-                try:
-                    req = request.Request(url, headers={"User-Agent": "RATHOD-HUB-Archive/1.0"})
-                    with request.urlopen(req, timeout=60) as response:
-                        data = response.read()
-                    if len(data) < 10_000 or data[:4] not in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1"):
-                        raise RuntimeError("downloaded response is not a TTF")
-                    with open(FONT_PATH, "wb") as handle:
-                        handle.write(data)
-                    break
-                except Exception as exc:
-                    last_error = exc
-            if not os.path.exists(FONT_PATH) or not valid_ttf(FONT_PATH):
-                raise RuntimeError(f"Noto Sans Devanagari TTF download failed: {last_error}")
-
+            download_ttf(
+                FONT_PATH,
+                [
+                    "https://github.com/openmaptiles/fonts/raw/refs/heads/master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                    "https://raw.githubusercontent.com/openmaptiles/fonts/master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                    "https://cdn.jsdelivr.net/gh/openmaptiles/fonts@master/noto-sans/NotoSansDevanagari-Regular.ttf",
+                ],
+            )
         pdfmetrics.registerFont(TTFont(FONT_NAME, FONT_PATH, shapable=True))
         log.info("Hindi PDF font ready: %s", FONT_PATH)
         return FONT_NAME
     except Exception as exc:
         raise RuntimeError("Hindi Devanagari font unavailable; refusing to create an incorrectly rendered PDF") from exc
+
+
+def ensure_latin_font() -> str:
+    """Load a Latin fallback so English, numbers and scientific symbols are not boxes."""
+    if LATIN_FONT_NAME in pdfmetrics.getRegisteredFontNames():
+        return LATIN_FONT_NAME
+    try:
+        if os.path.exists(LATIN_FONT_PATH) and not valid_ttf(LATIN_FONT_PATH) and LATIN_FONT_PATH.startswith("/tmp/"):
+            os.remove(LATIN_FONT_PATH)
+        if not os.path.exists(LATIN_FONT_PATH):
+            download_ttf(
+                LATIN_FONT_PATH,
+                [
+                    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+                    "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+                    "https://cdn.jsdelivr.net/gh/notofonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+                ],
+            )
+        pdfmetrics.registerFont(TTFont(LATIN_FONT_NAME, LATIN_FONT_PATH, shapable=True))
+        log.info("Latin fallback font ready: %s", LATIN_FONT_PATH)
+        return LATIN_FONT_NAME
+    except Exception as exc:
+        raise RuntimeError("Latin fallback font unavailable; refusing to create a PDF with missing glyphs") from exc
+
+
+def pdf_text(value: object) -> str:
+    """Use Devanagari for Hindi and a full Latin font for English/numbers/symbols."""
+    text = str(value or "")
+    if not text:
+        return ""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_latin: bool | None = None
+
+    def flush() -> None:
+        if not current:
+            return
+        escaped = escape("".join(current))
+        if current_latin:
+            chunks.append(f'<font name="{LATIN_FONT_NAME}">{escaped}</font>')
+        else:
+            chunks.append(escaped)
+        current.clear()
+
+    for char in text:
+        code = ord(char)
+        is_latin = not (0x0900 <= code <= 0x097F)
+        if current_latin is not None and is_latin != current_latin:
+            flush()
+        current_latin = is_latin
+        current.append(char)
+    flush()
+    return "".join(chunks)
 
 
 def rest(method: str, table: str, params: dict | None = None, body: dict | None = None):
@@ -162,12 +232,12 @@ def find_file(access: str, folder: str, name: str):
 def ensure_group_access(access: str, file_id: str) -> None:
     """Allow Telegram group members with the link to open the PDF."""
     try:
-        permissions_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=permissions(id,type,role)"
+        permissions_url = "https://www.googleapis.com/drive/v3/files/" + file_id + "/permissions?fields=permissions(id,type,role)"
         data = drive("GET", permissions_url, access)
         if not any(p.get("type") == "anyone" and p.get("role") == "reader" for p in data.get("permissions", [])):
             drive(
                 "POST",
-                f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id",
+                "https://www.googleapis.com/drive/v3/files/" + file_id + "/permissions?fields=id",
                 access,
                 json.dumps({"type": "anyone", "role": "reader"}).encode(),
                 "application/json",
@@ -282,6 +352,7 @@ def extract(row: dict):
 
 def make_pdf(title: str, rows: list[dict], answers: bool) -> bytes:
     font = ensure_hindi_font()
+    ensure_latin_font()
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=A4, rightMargin=16 * mm, leftMargin=16 * mm, topMargin=15 * mm, bottomMargin=15 * mm)
     styles = getSampleStyleSheet()
@@ -289,18 +360,18 @@ def make_pdf(title: str, rows: list[dict], answers: bool) -> bytes:
     styles.add(ParagraphStyle(name="RA", parent=styles["BodyText"], fontName=font, fontSize=8.5, leading=12, shaping=1))
     styles.add(ParagraphStyle(name="RQ", parent=styles["Heading3"], fontName=font, fontSize=10.5, leading=14, spaceBefore=8, spaceAfter=4, shaping=1))
     story = [
-        Paragraph(escape(title), styles["RATitle"]),
+        Paragraph(pdf_text(title), styles["RATitle"]),
         Spacer(1, 5 * mm),
-        Paragraph(escape(f"कुल प्रश्न: {len(rows)} | RATHOD HUB संग्रह"), styles["RA"]),
+        Paragraph(pdf_text(f"कुल प्रश्न: {len(rows)} | RATHOD HUB संग्रह"), styles["RA"]),
     ]
     option_letters = ("क", "ख", "ग", "घ")
     for number, question in enumerate(rows, 1):
-        story.append(Paragraph(escape(f"{number}. [{question['mode']}] {question['question']}"), styles["RQ"]))
+        story.append(Paragraph(pdf_text(f"{number}. [{question['mode']}] {question['question']}"), styles["RQ"]))
         for index, option in enumerate(question["options"]):
-            story.append(Paragraph(escape(f"{option_letters[index]}. {option}"), styles["RA"]))
+            story.append(Paragraph(pdf_text(f"{option_letters[index]}. {option}"), styles["RA"]))
         if answers:
             answer = "उपलब्ध नहीं" if question["correct_index"] is None else option_letters[question["correct_index"]]
-            story.append(Paragraph(escape("सही उत्तर: " + answer), styles["RA"]))
+            story.append(Paragraph(pdf_text("सही उत्तर: " + answer), styles["RA"]))
     document.build(story)
     return output.getvalue()
 
