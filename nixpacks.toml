@@ -2,7 +2,7 @@
 nixPkgs = ["ffmpeg", "python311"]
 
 [phases.install]
-cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt", "python master_lock_patch.py"]
 
 [start]
-cmd = "python patch_bot.py && python archive_patch.py && python -m py_compile main.py quiz.py config.py supabase_sync.py archive_sync.py question_archive_worker.py && python main.py"
+cmd = "python patch_bot.py && python archive_patch.py && python -m py_compile main.py quiz.py config.py supabase_sync.py archive_sync.py question_archive_worker.py silent_bridge_bot.py master_control.py && python main.py"
