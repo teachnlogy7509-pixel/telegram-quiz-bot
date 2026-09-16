@@ -36,6 +36,12 @@ if path.exists():
         source = source.replace(old_label, new_label, 1)
     source = source.replace('"Notes_" + label + ".pdf"', 'notes_name')
     source = source.replace('"Test_" + label + ".pdf"', 'test_name')
+    # Footer revision changes the deterministic suffix once, so a PDF created
+    # before the branding fix is never reused as the corrected PDF.
+    source = source.replace(
+        '"RATHOD-HUB:" + window_key',
+        '"RATHOD-HUB:FOOTER-V1:" + window_key',
+    )
 
     # Biology/technical names remain in English, but generic mode labels are
     # Hindi. The body and options continue to use the real Devanagari font.
