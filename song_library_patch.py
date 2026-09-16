@@ -22,8 +22,13 @@ if worker.exists():
             source = source.replace('import master_control\n', 'import master_control\nimport song_library_worker\n', 1)
         else:
             source = source.replace('from __future__ import annotations\n', 'from __future__ import annotations\n\nimport song_library_worker\n', 1)
-    if 'song_library_worker.process_once()' not in source:
-        source = source.replace('            run_once()\n', '            run_once()\n            song_library_worker.process_once()\n', 1)
+    if 'import song_upload_server' not in source:
+        source = source.replace('import song_library_worker\n', 'import song_library_worker\nimport song_upload_server\n', 1)
+    # The new Google Drive endpoint is the upload path; do not read song bytes
+    # from Supabase Storage in the polling loop.
+    source = source.replace('            song_library_worker.process_once()\n', '')
+    if 'song_upload_server.start()' not in source:
+        source = source.replace('    while True:\n', '    song_upload_server.start()\n    while True:\n', 1)
     worker.write_text(source)
 
-print('RATHOD HUB song queue connected to the PDF worker')
+print('RATHOD HUB direct Google Drive song API connected')
