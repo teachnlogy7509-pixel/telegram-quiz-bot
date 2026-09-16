@@ -39,17 +39,16 @@ replace_once(
     'try:\n        with request.urlopen(request.Request(url,data=data,headers=headers,method=method),timeout=30) as r:text=r.read().decode();return json.loads(text) if text else None\n    except error.HTTPError as exc:\n        detail=exc.read().decode(errors="replace")[:800]\n        raise RuntimeError(f"Supabase {method} {table} failed HTTP {exc.code}: {detail}") from exc',
     "Supabase error details",
 )
-# The source had literal braces around the full URL; replace them with a valid Drive URL.
-replace_once(
-    'f"{{https://www.googleapis.com/drive/v3/files/{file_id}}}/permissions?fields=permissions(id,type,role)"',
-    'f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=permissions(id,type,role)"',
-    "Google Drive permission read URL",
+
+# The original worker had literal braces around the full URL. Strip only those
+# braces and leave the f-string's {file_id} interpolation intact.
+source = source.replace(
+    'f"{{https://www.googleapis.com/drive/v3/files/',
+    'f"https://www.googleapis.com/drive/v3/files/',
 )
-replace_once(
-    'f"{{https://www.googleapis.com/drive/v3/files/{file_id}}}/permissions?fields=id"',
-    'f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id"',
-    "Google Drive permission write URL",
-)
+source = source.replace("{file_id}}}/permissions", "{file_id}/permissions")
+source = source.replace("{file_id}}/permissions", "{file_id}/permissions")
+
 replace_once(
     'except Exception as exc:\n        log.exception("Hindi font unavailable; PDF will use fallback font: %s",str(exc)[:180]);return "Helvetica"',
     'except Exception as exc:\n        raise RuntimeError("Hindi Devanagari font unavailable; refusing to create an incorrectly rendered PDF") from exc',
