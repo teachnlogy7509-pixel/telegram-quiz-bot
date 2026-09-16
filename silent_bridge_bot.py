@@ -108,51 +108,6 @@ async def archivepdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await message.reply_text("📚 <b>RATHOD Quiz Archive</b>\n" + label + "\n\n" + "\n".join(links) + "\n\n<i>इन links को group members खोल सकते हैं।</i>",parse_mode="HTML",disable_web_page_preview=True)
 
 
-def archive_pdf_rows(query: str = "") -> list[dict]:
-    """Return historical archive PDF records, optionally filtered by topic/name."""
-    rows = base.rest("GET", "rh_bridge_events", {"select":"payload,created_at", "event_type":"eq.archive_pdf_ready", "order":"created_at.desc", "limit":"100"}) or []
-    terms=[part.casefold() for part in str(query or "").split() if part.strip()]
-    result=[];seen=set()
-    for row in rows:
-        payload=row.get("payload") if isinstance(row.get("payload"),dict) else {}
-        notes=str(payload.get("notes_url") or "").strip()
-        test=str(payload.get("test_url") or "").strip()
-        label=str(payload.get("label") or "Latest archive").strip()
-        topics=payload.get("topics") if isinstance(payload.get("topics"),list) else []
-        haystack=" ".join([label,notes,test,str(payload.get("search_text") or "")]+[str(x) for x in topics]).casefold()
-        if terms and not all(term in haystack for term in terms): continue
-        key=(label,notes,test)
-        if key in seen or not (notes or test): continue
-        seen.add(key)
-        result.append({"label":label,"notes_url":notes,"test_url":test,"topics":[str(x) for x in topics if str(x).strip()]})
-    return result
-
-
-async def pdfglist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List all known archive PDFs or search them by file/topic words."""
-    message=update.effective_message
-    if not message: return
-    query=" ".join(context.args or []).strip()
-    try:
-        rows=await asyncio.to_thread(archive_pdf_rows,query)
-    except Exception:
-        base.log.exception("PDF archive list lookup failed")
-        await message.reply_text("PDF list अभी load नहीं हो पाई। थोड़ी देर बाद फिर कोशिश करें।")
-        return
-    if not rows:
-        await message.reply_text((f"🔎 '{query}' से कोई PDF नहीं मिली।" if query else "📚 अभी कोई archive PDF record नहीं मिला."))
-        return
-    lines=["📚 <b>RATHOD PDF Archive</b>",f"🔎 Search: <b>{html.escape(query)}</b>" if query else "📂 सभी उपलब्ध PDFs"]
-    for row in rows[:15]:
-        label=html.escape(row["label"])
-        topics=", ".join(row["topics"][:4])
-        suffix=f"\n   <i>Topics: {html.escape(topics)}</i>" if topics else ""
-        if row["notes_url"]: lines.append(f'📘 <a href="{html.escape(row["notes_url"],quote=True)}">Notes — {label}</a>{suffix}')
-        if row["test_url"]: lines.append(f'📝 <a href="{html.escape(row["test_url"],quote=True)}">Test — {label}</a>')
-    if len(rows)>15: lines.append(f"\nऔर {len(rows)-15} PDFs हैं। नाम/topic से search करें।")
-    await message.reply_text("\n".join(lines),parse_mode="HTML",disable_web_page_preview=True)
-
-
 async def sakhi_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     caller = update.effective_user
     if not caller or caller.id not in admin_ids(): return
@@ -175,7 +130,6 @@ async def bridge_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "• Admin app updates और Daily 9 PM updates\n"
         "• Telegram quiz leaderboard 30-minute delay के साथ\n"
         "• /archivepdf से latest Notes/Test PDF\n"
-        "• /pdfglist से सभी PDFs या topic/name search\n"
         "• New member welcome\n"
         "• /bol से Sakhi से बात करें\n"
         "• Group messages पर light reactions\n"
@@ -190,7 +144,6 @@ async def post_init(app: Application) -> None:
         BotCommand("bridgehelp", "Sakhi के features"),
         BotCommand("bol", "Sakhi से बात करें"),
         BotCommand("archivepdf", "Latest Notes/Test PDF"),
-        BotCommand("pdfglist", "PDF list या topic search"),
     ])
     if app.job_queue:
         app.job_queue.run_repeating(base.poll_job, interval=base.POLL_SECONDS, first=8, name="rh-bridge-poll")
@@ -207,12 +160,11 @@ def main() -> None:
     app.add_handler(CommandHandler("bridgehelp", bridge_help))
     app.add_handler(CommandHandler("bol", base.ask_command))
     app.add_handler(CommandHandler("archivepdf", archivepdf))
-    app.add_handler(CommandHandler("pdfglist", pdfglist))
     app.add_handler(CommandHandler("sakhi_notify", sakhi_notify))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, base.welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, base.chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, base.group_activity))
-    base.log.info("Sakhi configured: archive PDFs, PDF list search, max two shayari/day, duplicate guard")
+    base.log.info("Sakhi configured: archive PDFs, max two shayari/day, duplicate guard")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
