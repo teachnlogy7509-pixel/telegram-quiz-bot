@@ -85,8 +85,7 @@ def publish_archive_links(label,notes_url,test_url):
     payload={"label":label,"notes_url":notes_url or "","test_url":test_url or "","updated_at":datetime.now(timezone.utc).isoformat()}
     rows=rest("GET","rh_bridge_events",{"select":"id,payload","event_type":"eq.archive_pdf_ready","order":"created_at.desc","limit":"1"}) or []
     body={"event_type":"archive_pdf_ready","delivery_mode":"archive","display_name":"RATHOD Question Archive","payload":payload}
-    if rows and isinstance(rows[0].get("payload"),dict) and rows[0]["payload"].get("label")==label:
-        rest("PATCH","rh_bridge_events",{"id":f"eq.{rows[0]['id']}"},{"payload":payload})
+    if rows and isinstance(rows[0].get("payload"),dict) and rows[0]["payload"].get("label")==label:rest("PATCH","rh_bridge_events",{"id":f"eq.{rows[0]['id']}"},{"payload":payload})
     else:rest("POST","rh_bridge_events",body=body)
 
 def window(now):
