@@ -7,8 +7,8 @@ if song.exists():
     file_id_expr = chr(123) + 'file_id' + chr(125)
     good_permission = 'f"https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
     good_view = 'f"https://drive.google.com/file/d/' + file_id_expr + '/view?usp=sharing"'
-    source = re.sub(r'f"\{+https://www\.googleapis\.com/drive/v3/files/\{file_id\}+}/permissions\?fields=id"', good_permission, source)
-    source = re.sub(r'f"\{+https://drive\.google\.com/file/d/\{file_id\}+/view\?usp=sharing"', good_view, source)
+    source = re.sub(r'f"[{}]+https://www\\.googleapis\\.com/drive/v3/files/\\{file_id\\}[{}]+/permissions\\?fields=id"', good_permission, source)
+    source = re.sub(r'f"[{}]+https://drive\\.google\\.com/file/d/\\{file_id\\}[{}]+/view\\?usp=sharing"', good_view, source)
     song.write_text(source)
 
 worker = Path('question_archive_worker.py')
