@@ -8,16 +8,17 @@ if song.exists():
     left = chr(123)
     right = chr(125)
     file_id_expr = left + 'file_id' + right
-    good_permission = 'f"https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
-    good_view = 'f"https://drive.google.com/file/d/' + file_id_expr + '/view?usp=sharing"'
-    bad_permission = 'f"' + left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2 + '/permissions?fields=id"'
-    bad_view = 'f"' + left * 2 + 'https://drive.google.com/file/d/' + file_id_expr + right * 2 + '/view?usp=sharing"'
+    permission_prefix = 'permission_url = f"'
+    good_permission = permission_prefix + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
+    bad_permission = permission_prefix + left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2 + '/permissions?fields=id"'
+    good_view = 'return file_id, f"https://drive.google.com/file/d/' + file_id_expr + '/view?usp=sharing"'
+    bad_view = 'return file_id, f"' + left * 2 + 'https://drive.google.com/file/d/' + file_id_expr + right * 2 + '/view?usp=sharing"'
     source = source.replace(bad_permission, good_permission)
     source = source.replace(bad_view, good_view)
     song.write_text(source)
 
-# Apply the same repair to the direct API source during the Railway build. This
-# keeps older cached deployments from reintroducing the old owner gate or URL.
+# Apply the same repair and a pip-provided FFmpeg fallback to the direct API
+# during the Railway build. This also repairs older cached source deployments.
 upload = Path('song_upload_server.py')
 if upload.exists():
     source = upload.read_text()
@@ -26,14 +27,37 @@ if upload.exists():
         'OWNER_EMAILS = frozenset({"ashisharmy1982@gmail.com", "teachnlogy7509@gmail.com"})',
     )
     source = source.replace('if email != OWNER_EMAIL:', 'if email not in OWNER_EMAILS:')
-    source = source.replace(
-        'permission_url = f"{{https://www.googleapis.com/drive/v3/files/{file_id}}}/permissions?fields=id"',
-        'permission_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id"',
-    )
-    source = source.replace(
-        'return file_id, f"{{https://drive.google.com/file/d/{file_id}}}/view?usp=sharing"',
-        'return file_id, f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"',
-    )
+    permission_prefix = 'permission_url = f"'
+    good_permission = permission_prefix + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
+    bad_permission = permission_prefix + left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2 + '/permissions?fields=id"'
+    good_view = 'return file_id, f"https://drive.google.com/file/d/' + file_id_expr + '/view?usp=sharing"'
+    bad_view = 'return file_id, f"' + left * 2 + 'https://drive.google.com/file/d/' + file_id_expr + right * 2 + '/view?usp=sharing"'
+    source = source.replace(bad_permission, good_permission)
+    source = source.replace(bad_view, good_view)
+    if 'def _ffmpeg_binary()' not in source:
+        old_block = '''def _convert(source: bytes, suffix: str) -> bytes:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is not installed on Railway")
+'''
+        new_block = '''def _ffmpeg_binary() -> str:
+    binary = shutil.which("ffmpeg")
+    if binary:
+        return binary
+    try:
+        import imageio_ffmpeg
+        embedded = imageio_ffmpeg.get_ffmpeg_exe()
+        if embedded and os.path.exists(embedded):
+            return embedded
+    except Exception as exc:
+        log.warning("Embedded FFmpeg fallback unavailable: %s", str(exc)[:180])
+    raise RuntimeError("FFmpeg is not installed on Railway")
+
+
+def _convert(source: bytes, suffix: str) -> bytes:
+    ffmpeg = _ffmpeg_binary()
+'''
+        source = source.replace(old_block, new_block, 1)
     upload.write_text(source)
 
 # The direct API is independent of the old Supabase-Storage polling worker.
@@ -54,4 +78,4 @@ if worker.exists():
         source = source.replace('    while True:\n', '    song_upload_server.start()\n    while True:\n', 1)
     worker.write_text(source)
 
-print('RATHOD HUB direct Google Drive song API connected')
+print('RATHOD HUB direct Google Drive song API connected with FFmpeg fallback')
