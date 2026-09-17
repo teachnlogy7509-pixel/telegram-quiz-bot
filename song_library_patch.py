@@ -1,13 +1,14 @@
 from pathlib import Path
 
+left = chr(123)
+right = chr(125)
+file_id_expr = left + 'file_id' + right
+
 # Keep the old worker source importable if it is ever used by an existing queue,
 # but repair malformed Drive URL literals before Python imports it.
 song = Path('song_library_worker.py')
 if song.exists():
     source = song.read_text()
-    left = chr(123)
-    right = chr(125)
-    file_id_expr = left + 'file_id' + right
     permission_prefix = 'permission_url = f"'
     good_permission = permission_prefix + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
     bad_permission = permission_prefix + left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2 + '/permissions?fields=id"'
@@ -27,13 +28,24 @@ if upload.exists():
         'OWNER_EMAILS = frozenset({"ashisharmy1982@gmail.com", "teachnlogy7509@gmail.com"})',
     )
     source = source.replace('if email != OWNER_EMAIL:', 'if email not in OWNER_EMAILS:')
-    permission_prefix = 'permission_url = f"'
-    good_permission = permission_prefix + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + '/permissions?fields=id"'
-    bad_permission = permission_prefix + left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2 + '/permissions?fields=id"'
-    good_view = 'return file_id, f"https://drive.google.com/file/d/' + file_id_expr + '/view?usp=sharing"'
-    bad_view = 'return file_id, f"' + left * 2 + 'https://drive.google.com/file/d/' + file_id_expr + right * 2 + '/view?usp=sharing"'
-    source = source.replace(bad_permission, good_permission)
-    source = source.replace(bad_view, good_view)
+
+    # Repair both the old malformed literals and the temporary proxy rewrite.
+    source = source.replace(
+        left * 2 + 'https://www.googleapis.com/drive/v3/files/' + file_id_expr + right * 2,
+        'https://www.googleapis.com/drive/v3/files/' + file_id_expr,
+    )
+    source = source.replace(
+        left * 2 + 'https://drive.google.com/file/d/' + file_id_expr + right * 2,
+        'https://drive.google.com/file/d/' + file_id_expr,
+    )
+    source = source.replace(
+        '''    permission_url = f"{{https://www.googleapis.com/drive/v3/files/{parse.quote(file_id}}, safe='')}/permissions?fields=id"''',
+        '''    permission_url = "https://www.googleapis.com/drive/v3/files/" + parse.quote(file_id, safe="") + "/permissions?fields=id"''',
+    )
+    source = source.replace(
+        '''    return file_id, f"{{https://drive.google.com/file/d/{parse.quote(file_id}}, safe='')}/view?usp=sharing"''',
+        '''    return file_id, "https://drive.google.com/file/d/" + parse.quote(file_id, safe="") + "/view?usp=sharing"''',
+    )
     if 'def _ffmpeg_binary()' not in source:
         old_block = '''def _convert(source: bytes, suffix: str) -> bytes:
     ffmpeg = shutil.which("ffmpeg")
@@ -78,4 +90,4 @@ if worker.exists():
         source = source.replace('    while True:\n', '    song_upload_server.start()\n    while True:\n', 1)
     worker.write_text(source)
 
-print('RATHOD HUB direct Google Drive song API connected with FFmpeg fallback')
+print('RATHOD HUB direct Google Drive song API connected with media proxy and FFmpeg fallback')
