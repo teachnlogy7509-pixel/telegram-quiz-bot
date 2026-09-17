@@ -1,7 +1,11 @@
-"""Authenticated Railway endpoint for direct Google Drive song uploads."""
+"""Authenticated Railway endpoint for RATHOD HUB songs.
+
+Uploads are converted to MP3 and stored in Google Drive. The API also proxies
+Drive media with byte-range support so the browser audio player can seek and
+change volume normally, and lets the verified owner delete a song.
+"""
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -16,8 +20,6 @@ from urllib import error, parse, request
 import master_control
 
 log = logging.getLogger("rathod-song-upload-api")
-# AshishArmy is the current Admin owner. Keep the previous owner account as a
-# temporary fallback so an already-authenticated deployment cannot lock itself.
 OWNER_EMAILS = frozenset({"ashisharmy1982@gmail.com", "teachnlogy7509@gmail.com"})
 MAX_BYTES = 250 * 1024 * 1024
 SUPA_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -50,7 +52,7 @@ def _rest(method: str, table: str, params: dict | None = None, body: dict | None
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    if method in {"POST", "PATCH"}:
+    if method in {"POST", "PATCH", "DELETE"}:
         headers["Prefer"] = "return=representation"
     data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
     raw = _http(method, url, data, headers)
@@ -72,7 +74,7 @@ def _auth_user(token: str) -> dict:
     user = json.loads(raw.decode("utf-8"))
     email = str(user.get("email") or "").strip().lower()
     if email not in OWNER_EMAILS:
-        raise PermissionError("Only the RATHOD HUB owner can upload songs")
+        raise PermissionError("Only the RATHOD HUB owner can manage songs")
     return user
 
 
@@ -122,7 +124,7 @@ def _drive_upload(token: str, title: str, data: bytes) -> tuple[str, str]:
     file_id = str(response.get("id") or "")
     if not file_id:
         raise RuntimeError("Google Drive did not return a song file ID")
-    permission_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id"
+    permission_url = f"https://www.googleapis.com/drive/v3/files/{parse.quote(file_id, safe='')}/permissions?fields=id"
     try:
         _http(
             "POST",
@@ -133,13 +135,25 @@ def _drive_upload(token: str, title: str, data: bytes) -> tuple[str, str]:
         )
     except Exception as exc:
         log.warning("Song uploaded but Drive sharing failed: %s", str(exc)[:180])
-    return file_id, f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+    return file_id, f"https://drive.google.com/file/d/{parse.quote(file_id, safe='')}/view?usp=sharing"
+
+
+def _ffmpeg_binary() -> str:
+    binary = shutil.which("ffmpeg")
+    if binary:
+        return binary
+    try:
+        import imageio_ffmpeg
+        embedded = imageio_ffmpeg.get_ffmpeg_exe()
+        if embedded and os.path.exists(embedded):
+            return embedded
+    except Exception as exc:
+        log.warning("Embedded FFmpeg fallback unavailable: %s", str(exc)[:180])
+    raise RuntimeError("FFmpeg is not installed on Railway")
 
 
 def _convert(source: bytes, suffix: str) -> bytes:
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("FFmpeg is not installed on Railway")
+    ffmpeg = _ffmpeg_binary()
     with tempfile.TemporaryDirectory(prefix="rathod-song-") as directory:
         source_path = os.path.join(directory, "source" + suffix)
         output_path = os.path.join(directory, "song.mp3")
@@ -190,6 +204,21 @@ def _parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], tu
     return fields, upload
 
 
+def _public_base_url() -> str:
+    explicit = str(os.getenv("SONG_PUBLIC_BASE_URL") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    domain = str(os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().strip("/")
+    return ("https://" + domain) if domain else ""
+
+
+def _audio_url(file_id: str) -> str:
+    base = _public_base_url()
+    if base:
+        return base + "/song/audio/" + parse.quote(file_id, safe="")
+    return "https://drive.google.com/uc?export=download&id=" + parse.quote(file_id, safe="")
+
+
 def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
     if not master_control.is_enabled("pdf_worker"):
         raise RuntimeError("Song worker is paused by master control")
@@ -197,7 +226,7 @@ def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
     suffix = ".mp4" if lower.endswith(".mp4") else ".m4a" if lower.endswith(".m4a") else ".mp3" if lower.endswith(".mp3") else ".bin"
     audio = _convert(content, suffix)
     drive_id, drive_url = _drive_upload(_google_token(), title, audio)
-    audio_url = "https://drive.google.com/uc?export=download&id=" + drive_id
+    audio_url = _audio_url(drive_id)
     rows = _rest("POST", "rh_song_library", body={
         "title": title,
         "source_bucket": None,
@@ -219,14 +248,46 @@ def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
     }
 
 
+def _delete_song(song_id: str) -> None:
+    if not re.fullmatch(r"[0-9a-fA-F-]{16,}", song_id):
+        raise ValueError("Invalid song id")
+    rows = _rest("GET", "rh_song_library", params={"id": "eq." + song_id, "select": "id,drive_file_id"}) or []
+    if not rows:
+        raise FileNotFoundError("Song not found")
+    drive_id = str(rows[0].get("drive_file_id") or "").strip()
+    if drive_id:
+        try:
+            _http(
+                "DELETE",
+                "https://www.googleapis.com/drive/v3/files/" + parse.quote(drive_id, safe=""),
+                headers={"Authorization": "Bearer " + _google_token()},
+                timeout=45,
+            )
+        except RuntimeError as exc:
+            if "HTTP 404" not in str(exc):
+                raise
+    _rest("DELETE", "rh_song_library", params={"id": "eq." + song_id})
+
+
+def _drive_media_response(file_id: str, range_header: str | None = None):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,}", file_id):
+        raise ValueError("Invalid Drive file id")
+    headers = {"Authorization": "Bearer " + _google_token()}
+    if range_header:
+        headers["Range"] = range_header
+    url = "https://www.googleapis.com/drive/v3/files/" + parse.quote(file_id, safe="") + "?alt=media"
+    return request.urlopen(request.Request(url, headers=headers, method="GET"), timeout=120)
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RATHOD-HUB-SongAPI/3.1"
+    server_version = "RATHOD-HUB-SongAPI/4.0"
 
     def _headers(self, content_type: str = "application/json") -> None:
         origin = os.getenv("SONG_CORS_ORIGIN", "*")
         self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range, Content-Type")
         self.send_header("Vary", "Origin")
         self.send_header("Content-Type", content_type)
 
@@ -236,21 +297,86 @@ class Handler(BaseHTTPRequestHandler):
         self._headers()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _stream_audio(self, file_id: str, head_only: bool = False) -> None:
+        upstream = None
+        try:
+            upstream = _drive_media_response(file_id, self.headers.get("Range"))
+            status = int(getattr(upstream, "status", 200) or 200)
+            content_length = upstream.headers.get("Content-Length")
+            content_range = upstream.headers.get("Content-Range")
+            self.send_response(status)
+            self._headers("audio/mpeg")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=300")
+            if content_length:
+                self.send_header("Content-Length", content_length)
+            if content_range:
+                self.send_header("Content-Range", content_range)
+            self.end_headers()
+            if not head_only:
+                while True:
+                    chunk = upstream.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:400]
+            self._json(exc.code, {"ok": False, "error": detail or "Drive audio unavailable"})
+        except Exception as exc:
+            self._json(502, {"ok": False, "error": str(exc)[:400]})
+        finally:
+            if upstream is not None:
+                upstream.close()
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._headers()
         self.end_headers()
 
+    def do_HEAD(self) -> None:
+        path = parse.urlsplit(self.path).path.rstrip("/")
+        if path.startswith("/song/audio/"):
+            self._stream_audio(path.rsplit("/", 1)[-1], head_only=True)
+        else:
+            self.send_response(404)
+            self._headers()
+            self.end_headers()
+
     def do_GET(self) -> None:
-        if self.path.rstrip("/") == "/health":
-            self._json(200, {"ok": True, "service": "rathod-song-upload"})
+        path = parse.urlsplit(self.path).path.rstrip("/")
+        if path == "/health":
+            self._json(200, {"ok": True, "service": "rathod-song-upload", "media_proxy": True})
+        elif path.startswith("/song/audio/"):
+            self._stream_audio(path.rsplit("/", 1)[-1])
         else:
             self._json(404, {"ok": False, "error": "Not found"})
 
+    def do_DELETE(self) -> None:
+        path = parse.urlsplit(self.path).path.rstrip("/")
+        if not path.startswith("/song/"):
+            self._json(404, {"ok": False, "error": "Not found"})
+            return
+        song_id = path.rsplit("/", 1)[-1]
+        try:
+            auth = self.headers.get("Authorization", "")
+            if not auth.startswith("Bearer "):
+                raise PermissionError("Supabase login token missing")
+            _auth_user(auth[7:].strip())
+            _delete_song(song_id)
+            self._json(200, {"ok": True, "deleted": song_id})
+        except PermissionError as exc:
+            self._json(403, {"ok": False, "error": str(exc)})
+        except FileNotFoundError as exc:
+            self._json(404, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("Song delete failed")
+            self._json(500, {"ok": False, "error": str(exc)[:500]})
+
     def do_POST(self) -> None:
-        if self.path.rstrip("/") != "/song/upload":
+        if parse.urlsplit(self.path).path.rstrip("/") != "/song/upload":
             self._json(404, {"ok": False, "error": "Not found"})
             return
         try:
