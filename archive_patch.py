@@ -42,8 +42,19 @@ def apply_patch():
     if "PDF question archive enqueue failed" not in text and pdf_marker in text:
         text = text.replace(pdf_marker, pdf_replacement, 1)
 
+    # Keep generated question language readable: natural Hindi in Devanagari
+    # for ordinary words, standard English only for scientific terminology.
+    language_marker = "        4. The response MUST start with '[' and end with ']'.\n"
+    language_rules = """        5. Write ordinary instructions, question wording and generic answer text in natural, correct Hindi Devanagari when the topic is Hindi/Hinglish. Do not use broken Roman-Hindi, half-translated spellings or mixed fragments.
+        6. Keep scientific and technical terms, abbreviations, units, chemical names, Latin species names and proper nouns in standard English exactly (for example: DNA, RNA, ATP, NAD+, pH, gene, enzyme). Never output the Unicode replacement character, mojibake, or corrupted words.
+"""
+    if "Unicode replacement character" not in text:
+        if language_marker not in text:
+            raise SystemExit("quiz.py language prompt anchor missing")
+        text = text.replace(language_marker, language_marker + language_rules, 1)
+
     path.write_text(text)
-    print("Telegram question archive hooks applied")
+    print("Telegram question archive hooks and clean Hindi/English prompt applied")
 
 
 if __name__ == "__main__":
