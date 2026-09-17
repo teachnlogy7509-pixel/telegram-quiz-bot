@@ -5,3 +5,4 @@ pytz
 yt-dlp>=2025.1.0
 groq>=0.31.0
 reportlab[shaping]>=4.4.0
+imageio-ffmpeg>=0.5.1
