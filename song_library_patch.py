@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Keep the old worker source importable if it is ever used by an existing queue,
-# but repair the malformed Drive URL literals before Python imports it.
+# but repair malformed Drive URL literals before Python imports it.
 song = Path('song_library_worker.py')
 if song.exists():
     source = song.read_text()
@@ -15,6 +15,26 @@ if song.exists():
     source = source.replace(bad_permission, good_permission)
     source = source.replace(bad_view, good_view)
     song.write_text(source)
+
+# Apply the same repair to the direct API source during the Railway build. This
+# keeps older cached deployments from reintroducing the old owner gate or URL.
+upload = Path('song_upload_server.py')
+if upload.exists():
+    source = upload.read_text()
+    source = source.replace(
+        'OWNER_EMAIL = "teachnlogy7509@gmail.com"',
+        'OWNER_EMAILS = frozenset({"ashisharmy1982@gmail.com", "teachnlogy7509@gmail.com"})',
+    )
+    source = source.replace('if email != OWNER_EMAIL:', 'if email not in OWNER_EMAILS:')
+    source = source.replace(
+        'permission_url = f"{{https://www.googleapis.com/drive/v3/files/{file_id}}}/permissions?fields=id"',
+        'permission_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id"',
+    )
+    source = source.replace(
+        'return file_id, f"{{https://drive.google.com/file/d/{file_id}}}/view?usp=sharing"',
+        'return file_id, f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"',
+    )
+    upload.write_text(source)
 
 # The direct API is independent of the old Supabase-Storage polling worker.
 # Inject only the API server into the archive worker so the PDF worker keeps its
