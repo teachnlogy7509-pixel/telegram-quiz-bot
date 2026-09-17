@@ -218,7 +218,7 @@ def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RATHOD-HUB-SongAPI/3.0"
+    server_version = "RATHOD-HUB-SongAPI/3.1"
 
     def _headers(self, content_type: str = "application/json") -> None:
         origin = os.getenv("SONG_CORS_ORIGIN", "*")
