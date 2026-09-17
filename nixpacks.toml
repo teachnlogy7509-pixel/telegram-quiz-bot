@@ -1,8 +1,9 @@
 [phases.setup]
 nixPkgs = ["ffmpeg", "python311"]
+aptPkgs = ["ffmpeg"]
 
 [phases.install]
-cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt", "python master_lock_patch.py", "python pdf_shaping_patch.py", "python song_library_patch.py"]
+cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt", "which ffmpeg || true", "ffmpeg -version || true", "python master_lock_patch.py", "python pdf_shaping_patch.py", "python song_library_patch.py"]
 
 [start]
 cmd = "python patch_bot.py && python archive_patch.py && python -m py_compile main.py quiz.py config.py supabase_sync.py archive_sync.py question_archive_worker.py silent_bridge_bot.py master_control.py song_library_worker.py song_upload_server.py && python main.py"
