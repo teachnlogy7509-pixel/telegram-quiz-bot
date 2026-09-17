@@ -124,7 +124,7 @@ def _drive_upload(token: str, title: str, data: bytes) -> tuple[str, str]:
     file_id = str(response.get("id") or "")
     if not file_id:
         raise RuntimeError("Google Drive did not return a song file ID")
-    permission_url = f"https://www.googleapis.com/drive/v3/files/{parse.quote(file_id, safe='')}/permissions?fields=id"
+    permission_url = "https://www.googleapis.com/drive/v3/files/" + parse.quote(file_id, safe="") + "/permissions?fields=id"
     try:
         _http(
             "POST",
@@ -135,7 +135,7 @@ def _drive_upload(token: str, title: str, data: bytes) -> tuple[str, str]:
         )
     except Exception as exc:
         log.warning("Song uploaded but Drive sharing failed: %s", str(exc)[:180])
-    return file_id, f"https://drive.google.com/file/d/{parse.quote(file_id, safe='')}/view?usp=sharing"
+    return file_id, "https://drive.google.com/file/d/" + parse.quote(file_id, safe="") + "/view?usp=sharing"
 
 
 def _ffmpeg_binary() -> str:
