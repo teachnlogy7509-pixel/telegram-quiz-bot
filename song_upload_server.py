@@ -1,10 +1,4 @@
-"""Small authenticated HTTP endpoint for app-to-Google-Drive song uploads.
-
-The app sends the Supabase access token and an MP4/MP3 multipart upload. The
-worker verifies the owner through Supabase Auth, converts in Railway's
-temporary disk, uploads only the final MP3 to Google Drive, and stores only
-song metadata in Supabase. No Supabase Storage bucket is used by this path.
-"""
+"""Authenticated Railway endpoint for direct Google Drive song uploads."""
 from __future__ import annotations
 
 import cgi
@@ -12,27 +6,63 @@ import io
 import json
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
+from urllib import error, parse, request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib import error, request
 
 import master_control
-import song_library_worker as core
 
 log = logging.getLogger("rathod-song-upload-api")
 OWNER_EMAIL = "teachnlogy7509@gmail.com"
 MAX_BYTES = 250 * 1024 * 1024
+SUPA_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPA_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SONG_FOLDER = os.getenv("DRIVE_FOLDER_SONGS", "").strip()
+CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN", "").strip()
 _server = None
 
 
+def _http(method: str, url: str, body: bytes | None = None, headers: dict | None = None, timeout: int = 60) -> bytes:
+    try:
+        with request.urlopen(request.Request(url, data=body, headers=headers or {}, method=method), timeout=timeout) as response:
+            return response.read()
+    except error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:700]
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+
+
+def _rest(method: str, table: str, params: dict | None = None, body: dict | None = None):
+    if not SUPA_URL or not SUPA_KEY:
+        raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing")
+    url = f"{SUPA_URL}/rest/v1/{table}"
+    if params:
+        url += "?" + parse.urlencode(params, safe="(),.*")
+    headers = {
+        "apikey": SUPA_KEY,
+        "Authorization": "Bearer " + SUPA_KEY,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if method in {"POST", "PATCH"}:
+        headers["Prefer"] = "return=representation"
+    data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    raw = _http(method, url, data, headers)
+    return json.loads(raw.decode("utf-8")) if raw else []
+
+
 def _auth_user(token: str) -> dict:
-    if not core.SUPA_URL or not core.SUPA_KEY:
+    if not SUPA_URL or not SUPA_KEY:
         raise RuntimeError("Supabase service configuration missing")
-    raw = core._http(
+    raw = _http(
         "GET",
-        f"{core.SUPA_URL}/auth/v1/user",
+        f"{SUPA_URL}/auth/v1/user",
         headers={
-            "apikey": core.SUPA_KEY,
+            "apikey": SUPA_KEY,
             "Authorization": "Bearer " + token,
             "Accept": "application/json",
         },
@@ -44,16 +74,97 @@ def _auth_user(token: str) -> dict:
     return user
 
 
+def _google_token() -> str:
+    if not all((CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN)):
+        raise RuntimeError("Google OAuth variables are missing")
+    body = parse.urlencode({
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "refresh_token": REFRESH_TOKEN,
+        "grant_type": "refresh_token",
+    }).encode()
+    raw = _http(
+        "POST",
+        "https://oauth2.googleapis.com/token",
+        body,
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=30,
+    )
+    data = json.loads(raw.decode("utf-8"))
+    if not data.get("access_token"):
+        raise RuntimeError("Google OAuth refresh failed")
+    return str(data["access_token"])
+
+
+def _drive_upload(token: str, title: str, data: bytes) -> tuple[str, str]:
+    if not SONG_FOLDER:
+        raise RuntimeError("DRIVE_FOLDER_SONGS is not configured on the PDF worker")
+    boundary = "rathodsongboundary"
+    safe_title = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in title).strip()[:100] or "song"
+    metadata = json.dumps({"name": "RATHOD_HUB_SONG_" + safe_title + ".mp3", "parents": [SONG_FOLDER]}, ensure_ascii=False).encode("utf-8")
+    body = (
+        b"--" + boundary.encode() + b"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+        + metadata
+        + b"\r\n--" + boundary.encode() + b"\r\nContent-Type: audio/mpeg\r\n\r\n"
+        + data
+        + b"\r\n--" + boundary.encode() + b"--\r\n"
+    )
+    raw = _http(
+        "POST",
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+        body,
+        {"Authorization": "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary},
+        timeout=120,
+    )
+    response = json.loads(raw.decode("utf-8"))
+    file_id = str(response.get("id") or "")
+    if not file_id:
+        raise RuntimeError("Google Drive did not return a song file ID")
+    permission_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions?fields=id"
+    try:
+        _http(
+            "POST",
+            permission_url,
+            json.dumps({"type": "anyone", "role": "reader"}).encode("utf-8"),
+            {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            timeout=30,
+        )
+    except Exception as exc:
+        log.warning("Song uploaded but Drive sharing failed: %s", str(exc)[:180])
+    return file_id, f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+
+
+def _convert(source: bytes, suffix: str) -> bytes:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is not installed on Railway")
+    with tempfile.TemporaryDirectory(prefix="rathod-song-") as directory:
+        source_path = os.path.join(directory, "source" + suffix)
+        output_path = os.path.join(directory, "song.mp3")
+        with open(source_path, "wb") as handle:
+            handle.write(source)
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", source_path,
+             "-vn", "-codec:a", "libmp3lame", "-b:a", "192k", "-ar", "44100", output_path],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise RuntimeError((result.stderr or "FFmpeg conversion failed")[-700:])
+        with open(output_path, "rb") as handle:
+            return handle.read()
+
+
 def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
     if not master_control.is_enabled("pdf_worker"):
         raise RuntimeError("Song worker is paused by master control")
-    if not core.SONG_FOLDER:
-        raise RuntimeError("DRIVE_FOLDER_SONGS is not configured on the PDF worker")
-    suffix = ".mp4" if filename.lower().endswith(".mp4") else ".bin"
-    audio = core._convert(content, suffix)
-    drive_id, drive_url = core._drive_upload(core._google_token(), title, audio)
+    lower = filename.lower()
+    suffix = ".mp4" if lower.endswith(".mp4") else ".m4a" if lower.endswith(".m4a") else ".mp3" if lower.endswith(".mp3") else ".bin"
+    audio = _convert(content, suffix)
+    drive_id, drive_url = _drive_upload(_google_token(), title, audio)
     audio_url = "https://drive.google.com/uc?export=download&id=" + drive_id
-    rows = core._rest("POST", "rh_song_library", body={
+    rows = _rest("POST", "rh_song_library", body={
         "title": title,
         "source_bucket": None,
         "source_path": None,
@@ -75,7 +186,7 @@ def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RATHOD-HUB-SongAPI/1.0"
+    server_version = "RATHOD-HUB-SongAPI/2.0"
 
     def _headers(self, content_type: str = "application/json") -> None:
         origin = os.getenv("SONG_CORS_ORIGIN", "*")
@@ -99,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path == "/health":
+        if self.path.rstrip("/") == "/health":
             self._json(200, {"ok": True, "service": "rathod-song-upload"})
         else:
             self._json(404, {"ok": False, "error": "Not found"})
@@ -131,9 +242,7 @@ class Handler(BaseHTTPRequestHandler):
             file_item = form["file"]
             filename = str(getattr(file_item, "filename", "") or "song.mp4")
             content = file_item.file.read()
-            title = str(form.getfirst("title") or filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]).strip()[:120]
-            if not title:
-                title = "RATHOD HUB Song"
+            title = str(form.getfirst("title") or filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]).strip()[:120] or "RATHOD HUB Song"
             if not content:
                 raise ValueError("Uploaded song is empty")
             result = _process(title, filename, content, user)
