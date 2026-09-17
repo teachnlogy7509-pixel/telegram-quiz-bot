@@ -16,7 +16,9 @@ from urllib import error, parse, request
 import master_control
 
 log = logging.getLogger("rathod-song-upload-api")
-OWNER_EMAIL = "teachnlogy7509@gmail.com"
+# AshishArmy is the current Admin owner. Keep the previous owner account as a
+# temporary fallback so an already-authenticated deployment cannot lock itself.
+OWNER_EMAILS = frozenset({"ashisharmy1982@gmail.com", "teachnlogy7509@gmail.com"})
 MAX_BYTES = 250 * 1024 * 1024
 SUPA_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPA_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -69,7 +71,7 @@ def _auth_user(token: str) -> dict:
     )
     user = json.loads(raw.decode("utf-8"))
     email = str(user.get("email") or "").strip().lower()
-    if email != OWNER_EMAIL:
+    if email not in OWNER_EMAILS:
         raise PermissionError("Only the RATHOD HUB owner can upload songs")
     return user
 
