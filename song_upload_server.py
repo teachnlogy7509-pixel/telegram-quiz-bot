@@ -1,17 +1,17 @@
 """Authenticated Railway endpoint for direct Google Drive song uploads."""
 from __future__ import annotations
 
-import cgi
 import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
-from urllib import error, parse, request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib import error, parse, request
 
 import master_control
 
@@ -156,6 +156,38 @@ def _convert(source: bytes, suffix: str) -> bytes:
             return handle.read()
 
 
+def _parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], tuple[str, bytes] | None]:
+    """Minimal multipart/form-data parser; cgi was removed in Python 3.13."""
+    match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type, re.I)
+    if not match:
+        raise ValueError("multipart boundary is missing")
+    boundary = (match.group(1) or match.group(2)).strip().encode("utf-8")
+    delimiter = b"--" + boundary
+    fields: dict[str, str] = {}
+    upload: tuple[str, bytes] | None = None
+    for chunk in body.split(delimiter)[1:]:
+        if chunk.startswith(b"--"):
+            break
+        if chunk.startswith(b"\r\n"):
+            chunk = chunk[2:]
+        if b"\r\n\r\n" not in chunk:
+            continue
+        raw_headers, payload = chunk.split(b"\r\n\r\n", 1)
+        if payload.endswith(b"\r\n"):
+            payload = payload[:-2]
+        header_text = raw_headers.decode("latin-1")
+        disposition = re.search(r"content-disposition:\s*form-data;([^\r\n]+)", header_text, re.I)
+        if not disposition:
+            continue
+        params = dict(re.findall(r"(name|filename)=\"([^\"]*)\"", disposition.group(1), re.I))
+        name = params.get("name", "")
+        if name == "file":
+            upload = (params.get("filename") or "song.bin", payload)
+        elif name:
+            fields[name] = payload.decode("utf-8", errors="replace")
+    return fields, upload
+
+
 def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
     if not master_control.is_enabled("pdf_worker"):
         raise RuntimeError("Song worker is paused by master control")
@@ -186,7 +218,7 @@ def _process(title: str, filename: str, content: bytes, user: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RATHOD-HUB-SongAPI/2.0"
+    server_version = "RATHOD-HUB-SongAPI/3.0"
 
     def _headers(self, content_type: str = "application/json") -> None:
         origin = os.getenv("SONG_CORS_ORIGIN", "*")
@@ -228,21 +260,11 @@ class Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > MAX_BYTES:
                 raise ValueError("Song file must be between 1 byte and 250 MB")
             body = self.rfile.read(length)
-            form = cgi.FieldStorage(
-                fp=io.BytesIO(body),
-                headers=self.headers,
-                environ={
-                    "REQUEST_METHOD": "POST",
-                    "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                    "CONTENT_LENGTH": str(length),
-                },
-            )
-            if "file" not in form:
+            fields, upload = _parse_multipart(self.headers.get("Content-Type", ""), body)
+            if upload is None:
                 raise ValueError("file field is required")
-            file_item = form["file"]
-            filename = str(getattr(file_item, "filename", "") or "song.mp4")
-            content = file_item.file.read()
-            title = str(form.getfirst("title") or filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]).strip()[:120] or "RATHOD HUB Song"
+            filename, content = upload
+            title = str(fields.get("title") or filename.rsplit("/", 1)[-1].rsplit(".", 1)[0]).strip()[:120] or "RATHOD HUB Song"
             if not content:
                 raise ValueError("Uploaded song is empty")
             result = _process(title, filename, content, user)
