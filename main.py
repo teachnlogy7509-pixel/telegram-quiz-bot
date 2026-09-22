@@ -33,6 +33,7 @@ import multi_provider
 import premium_hub
 import scheduler as sched_module
 import supabase_sync
+import study_notes
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
 
 # Logging
@@ -358,15 +359,86 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"▪️ `{f}`\n"
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-IMAGE_MODELS = {
-    "flux": "FLUX — best overall quality",
-    "zimage": "Z-Image Turbo — fast generation",
-    "turbo": "Turbo/SDXL — quick backup",
+FALLBACK_IMAGE_MODELS = {
+    "zimage": ("zimage", "Z-Image Turbo"),
+    "mai": ("microsoft/mai-image-2.5-flash", "MAI Image Flash"),
+    "dreamshaper": ("dreamshaper", "DreamShaper"),
 }
-IMAGE_MODEL_ORDER = tuple(IMAGE_MODELS)
+_IMAGE_CATALOG_CACHE = {"expires": 0.0, "models": None}
 
 
-def _pollinations_image_url(prompt: str, model: str) -> str:
+def _pollinations_headers():
+    key = getattr(config, "POLLINATIONS_API_KEY", "").strip()
+    return {"Authorization": "Bearer " + key} if key else {}
+
+
+def _model_alias(model):
+    aliases = [str(x).strip().lower() for x in model.get("aliases") or [] if str(x).strip()]
+    preferred = [x for x in aliases if "/" not in x and len(x) <= 28]
+    if preferred:
+        return preferred[0]
+    return str(model.get("name") or "model").rsplit("/", 1)[-1].lower()
+
+
+async def _live_non_paid_image_models(force=False):
+    """Return current non-paid image models; cache for 15 minutes."""
+    now = asyncio.get_running_loop().time()
+    cached = _IMAGE_CATALOG_CACHE.get("models")
+    if cached and not force and now < _IMAGE_CATALOG_CACHE.get("expires", 0):
+        return cached
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(
+            "https://gen.pollinations.ai/image/models",
+            headers=_pollinations_headers(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    models = []
+    for item in payload if isinstance(payload, list) else []:
+        if item.get("category") != "image":
+            continue
+        if item.get("paid_only") is True:
+            continue
+        if "image" not in (item.get("output_modalities") or []):
+            continue
+        if (item.get("health") or {}).get("status") == "down":
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        models.append({
+            "name": name,
+            "alias": _model_alias(item),
+            "title": str(item.get("title") or name).strip(),
+            "community": bool(item.get("community")),
+            "status": str((item.get("health") or {}).get("status") or "unknown"),
+            "aliases": [str(x).strip().lower() for x in item.get("aliases") or []],
+        })
+    if not models:
+        raise RuntimeError("No live non-paid image models were returned")
+    _IMAGE_CATALOG_CACHE.update(expires=now + 900, models=models)
+    return models
+
+
+def _fallback_catalog():
+    return [
+        {"name": model, "alias": alias, "title": title, "community": False,
+         "status": "fallback", "aliases": [alias]}
+        for alias, (model, title) in FALLBACK_IMAGE_MODELS.items()
+    ]
+
+
+def _catalog_lookup(models):
+    lookup = {}
+    for item in models:
+        keys = [item["alias"], item["name"].lower(), *item.get("aliases", [])]
+        for key in keys:
+            if key and key not in lookup:
+                lookup[key] = item
+    return lookup
+
+
+def _pollinations_image_url(prompt, model):
     seed = random.randint(1, 2_147_483_647)
     return (
         "https://gen.pollinations.ai/image/" + quote_plus(prompt)
@@ -374,100 +446,125 @@ def _pollinations_image_url(prompt: str, model: str) -> str:
     )
 
 
-async def cmd_imagemodels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_imagemodels(update, context):
     if not await check_bot_active(update, context):
         return
-    lines = ["🎨 Available AI image models:", ""]
-    for name, description in IMAGE_MODELS.items():
-        lines.append(f"• {name}: {description}")
-    lines.extend([
-        "",
-        "Use: /image <prompt>",
-        "Or: /image <model> <prompt>",
-        "Example: /image zimage Indian soldier in mountains",
-    ])
+    try:
+        models = await _live_non_paid_image_models(force=True)
+        source = "Live non-paid catalogue"
+    except Exception as exc:
+        logger.warning("Live image catalogue failed: %s", exc)
+        models = _fallback_catalog()
+        source = "Fallback catalogue"
+    lines = [f"🎨 {source} ({len(models)} models)", ""]
+    for item in models:
+        badge = " • community" if item["community"] else ""
+        lines.append(f"• {item['alias']} — {item['title']}{badge}")
+        if sum(len(x) + 1 for x in lines) > 3500:
+            lines.append("…बाकी models live catalogue में उपलब्ध हैं।")
+            break
+    lines.extend(["", "Use: /image <topic>", "Or: /image <model-alias> <topic>"])
     await update.message.reply_text("\n".join(lines))
 
 
-async def cmd_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate an image with Pollinations and fall back across free models."""
+async def cmd_image(update, context):
+    """Create an educational illustration using current non-paid models."""
     if not await check_bot_active(update, context):
         return
-    if not update.message:
-        return
-
     args = list(context.args or [])
     if not args:
         await update.message.reply_text(
-            "🎨 इस्तेमाल: /image <description>\n"
-            "या: /image <model> <description>\n\n"
-            "उदाहरण: /image flux Indian army soldier in mountains\n"
-            "Models देखने के लिए /imagemodels भेजें।"
+            "इस्तेमाल: /image <topic>\n"
+            "उदाहरण: /image fungi\n"
+            "Models: /imagemodels\n"
+            "Readable notes: /studynote fungi"
         )
         return
-
-    requested_model = "flux"
-    if args[0].lower() in IMAGE_MODELS:
-        requested_model = args.pop(0).lower()
-
-    prompt = " ".join(args).strip()
-    if not prompt:
-        await update.message.reply_text("❌ Image का description भी लिखें।")
+    try:
+        models = await _live_non_paid_image_models()
+    except Exception as exc:
+        logger.warning("Using fallback image catalogue: %s", exc)
+        models = _fallback_catalog()
+    lookup = _catalog_lookup(models)
+    selected = None
+    first = args[0].lower()
+    if first in lookup:
+        selected = lookup[first]
+        args.pop(0)
+    topic = " ".join(args).strip()[:180]
+    if not topic:
+        await update.message.reply_text("Topic का नाम लिखें।")
         return
-
-    # Keep the generated URL within practical HTTP/Telegram limits.
-    prompt = prompt[:500]
-    candidates = [requested_model] + [
-        model for model in IMAGE_MODEL_ORDER if model != requested_model
-    ]
-    wait_msg = await update.message.reply_text(
-        f"🎨 {requested_model} से AI image बनाई जा रही है…"
+    prompt = (
+        f"Accurate educational illustration about {topic}, NEET NCERT textbook style, "
+        "cream background, dark green accents, scientifically recognizable, simple "
+        "composition, high detail, no paragraphs, no table, no invented labels, minimal text"
     )
-
-    headers = {}
-    api_key = getattr(config, "POLLINATIONS_API_KEY", "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
+    priority_names = [
+        "tongyi-mai/z-image-turbo",
+        "microsoft/mai-image-2.5-flash",
+        "lykon/dreamshaper-8-lcm",
+        "black-forest-labs/flux.1-schnell",
+        "amazon/nova-canvas-v1",
+        "openai/gpt-image-2",
+    ]
+    by_name = {item["name"]: item for item in models}
+    candidates = []
+    if selected:
+        candidates.append(selected)
+    for name in priority_names:
+        item = by_name.get(name)
+        if item and item not in candidates:
+            candidates.append(item)
+    for item in models:
+        if item not in candidates:
+            candidates.append(item)
+    candidates = candidates[:6]
+    shown = selected["alias"] if selected else candidates[0]["alias"]
+    wait = await update.message.reply_text(f"🎨 {topic} की image ({shown}) बन रही है…")
     errors = []
-    timeout = httpx.Timeout(150.0, connect=20.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for model in candidates:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(150, connect=20), follow_redirects=True) as client:
+        for item in candidates:
             try:
                 response = await client.get(
-                    _pollinations_image_url(prompt, model), headers=headers
+                    _pollinations_image_url(prompt, item["name"]),
+                    headers=_pollinations_headers(),
                 )
                 response.raise_for_status()
-                image_bytes = response.content
-                content_type = response.headers.get("content-type", "").lower()
-
-                if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
-                    raise RuntimeError("invalid image size")
-                if "image/" not in content_type:
-                    raise RuntimeError(
-                        f"provider returned {content_type or 'unknown content'}"
-                    )
-
-                image_file = io.BytesIO(image_bytes)
-                image_file.name = f"ai-{model}.jpg"
+                kind = response.headers.get("content-type", "").lower()
+                if "image/" not in kind or not response.content or len(response.content) > 10 * 1024 * 1024:
+                    raise RuntimeError("invalid image response")
+                image = io.BytesIO(response.content)
+                image.name = "study-" + item["alias"] + ".jpg"
                 await update.message.reply_photo(
-                    photo=image_file,
-                    caption=f"🎨 AI Generated • Model: {model}\n📝 {prompt[:800]}",
+                    photo=image,
+                    caption=f"🎨 {topic} • Model: {item['alias']}",
                 )
                 try:
-                    await wait_msg.delete()
+                    await wait.delete()
                 except Exception:
                     pass
                 return
             except Exception as exc:
-                logger.warning("Image model %s failed: %s", model, exc)
-                errors.append(f"{model}: {str(exc)[:80]}")
+                detail = f"{item['alias']}: {str(exc)[:100]}"
+                errors.append(detail)
+                logger.warning("Image model failed: %s", detail)
+    logger.error("All non-paid image models failed: %s", " | ".join(errors))
+    await wait.edit_text("❌ सभी उपलब्ध non-paid image models fail हुए। Railway logs देखें।")
 
-    logger.error("All image models failed: %s", " | ".join(errors))
-    await wait_msg.edit_text(
-        "❌ सभी image models अभी fail हो गए। थोड़ी देर बाद दोबारा कोशिश करें।"
-    )
 
+async def cmd_studynote(update, context):
+    if not await check_bot_active(update,context): return
+    topic=" ".join(context.args or []).strip()[:180]
+    if not topic: await update.message.reply_text("इस्तेमाल: /studynote <topic>\nउदाहरण: /studynote fungi");return
+    wait=await update.message.reply_text(f"📚 {topic} का readable study card बन रहा है…")
+    try:
+        card,notes=await study_notes.create(topic,quiz_module)
+        await update.message.reply_photo(photo=card,caption=f"📚 {notes['title']}\n⚠️ NCERT से verify करें।")
+        try: await wait.delete()
+        except Exception: pass
+    except Exception as exc:
+        logger.exception("Study note failed");await wait.edit_text("❌ Study note नहीं बना। Gemini/Groq key और Railway logs जाँचें।\n"+str(exc)[:220])
 
 HELP_TEXT = """
 🤖 Telegram Quiz Bot
@@ -521,9 +618,9 @@ HELP_TEXT = """
 /song — Reply किए गए Telegram audio को दोबारा भेजें
 
 🌟 Fun:
-/image <prompt> — FLUX से AI image
-/image <model> <prompt> — चुने हुए model से image
-/imagemodels — उपलब्ध image models
+/image <topic> — Topic illustration
+/studynote <topic> — Readable study card
+/imagemodels — Image models
 /shayari
 /gm
 /confess <message> — DM से confession
@@ -990,8 +1087,9 @@ def main():
     app.add_handler(CommandHandler("schedulereset", vip_scheduler.cmd_schedulereset))
 
 
-    # AI image handlers
+    # Study handlers
     app.add_handler(CommandHandler("image", cmd_image))
+    app.add_handler(CommandHandler("studynote", cmd_studynote))
     app.add_handler(CommandHandler("imagemodels", cmd_imagemodels))
 
     # Fun handlers
