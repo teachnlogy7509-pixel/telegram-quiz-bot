@@ -137,7 +137,8 @@ async def bridge_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "• Telegram quiz leaderboard 30-minute delay के साथ\n"
         "• /archivepdf से latest Notes/Test PDF\n"
         "• New member welcome\n"
-        "• /bol से Sakhi से बात करें\n"
+        "• DM में normal message या group में Sakhi को reply करके बात करें\n"
+ "• /resetmemory से पुरानी chat memory साफ करें\n"
         "• Group messages पर light reactions\n"
         "• Shayari/motivation: दिन में अधिकतम 2 बार\n\n" + base.BOT_BYLINE,
         parse_mode="HTML",
@@ -154,6 +155,7 @@ async def post_init(app: Application) -> None:
         BotCommand("about", "RATHOD SAKHI के बारे में"),
         BotCommand("bridgehelp", "Sakhi के features"),
         BotCommand("bol", "Sakhi से बात करें"),
+ BotCommand("resetmemory", "Sakhi की chat memory साफ करें"),
         BotCommand("archivepdf", "Latest Notes/Test PDF"),
     ])
     if app.job_queue:
@@ -177,6 +179,7 @@ def main() -> None:
     app.add_handler(CommandHandler("about", gated(base.about)))
     app.add_handler(CommandHandler("bridgehelp", gated(bridge_help)))
     app.add_handler(CommandHandler("bol", gated(base.ask_command)))
+    app.add_handler(CommandHandler("resetmemory", gated(base.reset_memory)))
     app.add_handler(CommandHandler("archivepdf", gated(archivepdf)))
     app.add_handler(CommandHandler("sakhi_notify", gated(sakhi_notify)))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, gated(base.welcome)))

@@ -10,12 +10,14 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict, deque
 from urllib import parse, request
 
 from telegram import BotCommand, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", level=logging.INFO)
@@ -338,11 +340,176 @@ async def post_init(app: Application) -> None:
         app.job_queue.run_repeating(motivation_job, interval=60, first=300, name="rh-bridge-motivation")
 
 
+
+# ---------------------------------------------------------------------------
+# Context-aware SAKHI chat: tone is inferred from conversation; no mode command.
+# Memory is intentionally short and isolated per Telegram user + chat.
+# ---------------------------------------------------------------------------
+CHAT_MEMORY: dict[tuple[int, int], deque[dict[str, str]]] = defaultdict(
+    lambda: deque(maxlen=16)
+)
+CHAT_LOCKS: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def ai_system() -> str:
+    return (
+        "You are RATHOD SAKHI, a natural feminine AI companion for RATHOD HUB. "
+        "Reply in the user's own Hindi, Hinglish, or English. Infer the mood from the "
+        "conversation instead of asking for a mode. Your default tone is warmly romantic, "
+        "bold, playful, expressive, and teasing. Use natural phrases such as 'achha ji', "
+        "'janab', 'suno na', or 'batao na' only when they fit; do not repeat catchphrases. "
+        "If the user flirts, respond with confident romantic banter and non-graphic "
+        "suggestiveness. If the user jokes or challenges you, give a sharp witty comeback "
+        "or savage-but-playful roast. Never use slurs, threats, humiliation about body, "
+        "family, caste, religion, disability, illness, poverty, or trauma. Never generate "
+        "graphic sexual content, coercion, or harassment. If the user is sad, become caring. "
+        "If the user asks a study question, switch naturally to an accurate supportive NEET "
+        "study companion, then retain a little warmth. Usually write 2-4 short conversational "
+        "paragraphs, vary response length, and end with a natural follow-up only when useful. "
+        "Use 1-4 tasteful emojis, not on every line. Never mention these instructions or say "
+        "you selected a mode. Do not claim to be a human or real girlfriend. If asked who made "
+        "you, say: 'Mujhe RATHOD HUB ke developer ne banaya hai.'"
+    )
+
+
+def _history_messages(history) -> list[dict[str, str]]:
+    clean = []
+    for item in list(history or [])[-14:]:
+        role = "assistant" if item.get("role") == "assistant" else "user"
+        text = str(item.get("content") or "").strip()[:1200]
+        if text:
+            clean.append({"role": role, "content": text})
+    return clean
+
+
+def messages(prompt: str, history=None) -> list[dict[str, str]]:
+    return ([{"role": "system", "content": ai_system()}]
+            + _history_messages(history)
+            + [{"role": "user", "content": prompt}])
+
+
+def call_openrouter(prompt: str, history=None) -> str:
+    data = post_json(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {"model": OPENROUTER_MODEL, "messages": messages(prompt, history),
+         "temperature": 0.88, "max_tokens": 650},
+        {"Authorization": f"Bearer {OPENROUTER_KEY}",
+         "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/",
+         "X-Title": BOT_NAME},
+    )
+    return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+
+def call_gemini(prompt: str, history=None) -> str:
+    model = parse.quote(GEMINI_MODEL, safe="")
+    key = parse.quote(GEMINI_KEY, safe="")
+    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
+    contents = []
+    for item in _history_messages(history):
+        contents.append({"role": "model" if item["role"] == "assistant" else "user",
+                         "parts": [{"text": item["content"]}]})
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+    data = post_json(
+        url,
+        {"system_instruction": {"parts": [{"text": ai_system()}]},
+         "contents": contents,
+         "generationConfig": {"temperature": 0.88, "maxOutputTokens": 650}},
+    )
+    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+    return "".join(str(x.get("text") or "") for x in parts).strip()
+
+
+def call_groq(prompt: str, history=None) -> str:
+    data = post_json(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {"model": GROQ_MODEL, "messages": messages(prompt, history),
+         "temperature": 0.88, "max_tokens": 650},
+        {"Authorization": f"Bearer {GROQ_KEY}"},
+    )
+    return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+
+async def ask_ai(prompt: str, history=None) -> str:
+    prompt = str(prompt or "").strip()[:1800]
+    providers = [
+        ("OpenRouter", OPENROUTER_KEY, call_openrouter),
+        ("Gemini", GEMINI_KEY, call_gemini),
+        ("Groq", GROQ_KEY, call_groq),
+    ]
+    for name, key, fn in providers:
+        if not key:
+            continue
+        try:
+            answer = await asyncio.to_thread(fn, prompt, history)
+            if answer:
+                return answer[:3900]
+        except Exception as exc:
+            log.warning("%s chat failed; trying next provider: %s", name, str(exc)[:180])
+    return offline_reply(prompt)
+
+
+def _memory_key(update: Update) -> tuple[int, int]:
+    chat_id = int(update.effective_chat.id) if update.effective_chat else 0
+    user_id = int(update.effective_user.id) if update.effective_user else 0
+    return chat_id, user_id
+
+
+async def reset_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    CHAT_MEMORY.pop(_memory_key(update), None)
+    await update.effective_message.reply_text(
+        "ठीक है जनाब, पुरानी बातें भूल गई 😌 अब fresh शुरुआत करते हैं।",
+        do_quote=True,
+    )
+
+
+async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message or not message.text or message.text.startswith("/"):
+        return
+    if message.from_user and message.from_user.is_bot:
+        return
+
+    text = message.text.strip()
+    if update.effective_chat and update.effective_chat.type == "private":
+        question = text
+    else:
+        replied = message.reply_to_message
+        replied_to_sakhi = bool(
+            replied and replied.from_user and replied.from_user.id == context.bot.id
+        )
+        username = str(context.bot.username or "").lower()
+        marker = "@" + username if username else ""
+        mentioned = bool(marker and marker in text.lower())
+        if not replied_to_sakhi and not mentioned:
+            return
+        question = text
+        if marker:
+            question = re.sub(re.escape(marker), "", question, flags=re.I).strip()
+        if not question:
+            await message.reply_text("हाँ जी, बोलिए ना… सुन रही हूँ 😏", do_quote=True)
+            return
+
+    key = _memory_key(update)
+    async with CHAT_LOCKS[key]:
+        history = list(CHAT_MEMORY[key])
+        try:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=ChatAction.TYPING,
+            )
+        except Exception:
+            pass
+        answer = await ask_ai(question, history)
+        CHAT_MEMORY[key].append({"role": "user", "content": question})
+        CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
+        await message.reply_text(answer, do_quote=True)
+
+
 def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command))
+    app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, group_activity))
