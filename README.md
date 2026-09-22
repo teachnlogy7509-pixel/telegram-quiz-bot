@@ -10,6 +10,8 @@
 - PDF file library
 - Voice messages with Gemini
 - Fun commands: `/shayari`, `/gm`, `/confess`
+- `/image [flux|zimage|turbo] <prompt>` generates an AI image with automatic model fallback
+- `/imagemodels` lists the available image models
 - `/song <name>` returns YouTube / YouTube Music search links for a song title
 - `/song` re-sends a Telegram audio message when used as a reply
 
@@ -22,5 +24,6 @@ Set:
 - `GROQ_API_KEY` (optional fallback)
 - `GROQ_API_KEY_2` (optional fallback)
 - `GROQ_MODEL` (optional)
+- `POLLINATIONS_API_KEY` (optional; anonymous generation is attempted when omitted)
 
 Start command: `python main.py`

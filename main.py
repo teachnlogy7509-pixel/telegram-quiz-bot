@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ import tempfile
 import shutil
 import traceback
 import yt_dlp
+import httpx
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta
 
@@ -356,6 +358,117 @@ async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"▪️ `{f}`\n"
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
+IMAGE_MODELS = {
+    "flux": "FLUX — best overall quality",
+    "zimage": "Z-Image Turbo — fast generation",
+    "turbo": "Turbo/SDXL — quick backup",
+}
+IMAGE_MODEL_ORDER = tuple(IMAGE_MODELS)
+
+
+def _pollinations_image_url(prompt: str, model: str) -> str:
+    seed = random.randint(1, 2_147_483_647)
+    return (
+        "https://gen.pollinations.ai/image/" + quote_plus(prompt)
+        + f"?model={quote_plus(model)}&width=1024&height=1024&seed={seed}&safe=true"
+    )
+
+
+async def cmd_imagemodels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_bot_active(update, context):
+        return
+    lines = ["🎨 Available AI image models:", ""]
+    for name, description in IMAGE_MODELS.items():
+        lines.append(f"• {name}: {description}")
+    lines.extend([
+        "",
+        "Use: /image <prompt>",
+        "Or: /image <model> <prompt>",
+        "Example: /image zimage Indian soldier in mountains",
+    ])
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate an image with Pollinations and fall back across free models."""
+    if not await check_bot_active(update, context):
+        return
+    if not update.message:
+        return
+
+    args = list(context.args or [])
+    if not args:
+        await update.message.reply_text(
+            "🎨 इस्तेमाल: /image <description>\n"
+            "या: /image <model> <description>\n\n"
+            "उदाहरण: /image flux Indian army soldier in mountains\n"
+            "Models देखने के लिए /imagemodels भेजें।"
+        )
+        return
+
+    requested_model = "flux"
+    if args[0].lower() in IMAGE_MODELS:
+        requested_model = args.pop(0).lower()
+
+    prompt = " ".join(args).strip()
+    if not prompt:
+        await update.message.reply_text("❌ Image का description भी लिखें।")
+        return
+
+    # Keep the generated URL within practical HTTP/Telegram limits.
+    prompt = prompt[:500]
+    candidates = [requested_model] + [
+        model for model in IMAGE_MODEL_ORDER if model != requested_model
+    ]
+    wait_msg = await update.message.reply_text(
+        f"🎨 {requested_model} से AI image बनाई जा रही है…"
+    )
+
+    headers = {}
+    api_key = getattr(config, "POLLINATIONS_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    errors = []
+    timeout = httpx.Timeout(150.0, connect=20.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for model in candidates:
+            try:
+                response = await client.get(
+                    _pollinations_image_url(prompt, model), headers=headers
+                )
+                response.raise_for_status()
+                image_bytes = response.content
+                content_type = response.headers.get("content-type", "").lower()
+
+                if not image_bytes or len(image_bytes) > 10 * 1024 * 1024:
+                    raise RuntimeError("invalid image size")
+                if "image/" not in content_type:
+                    raise RuntimeError(
+                        f"provider returned {content_type or 'unknown content'}"
+                    )
+
+                image_file = io.BytesIO(image_bytes)
+                image_file.name = f"ai-{model}.jpg"
+                await update.message.reply_photo(
+                    photo=image_file,
+                    caption=f"🎨 AI Generated • Model: {model}\n📝 {prompt[:800]}",
+                )
+                try:
+                    await wait_msg.delete()
+                except Exception:
+                    pass
+                return
+            except Exception as exc:
+                logger.warning("Image model %s failed: %s", model, exc)
+                errors.append(f"{model}: {str(exc)[:80]}")
+
+    logger.error("All image models failed: %s", " | ".join(errors))
+    await wait_msg.edit_text(
+        "❌ सभी image models अभी fail हो गए। थोड़ी देर बाद दोबारा कोशिश करें।"
+    )
+
+
 HELP_TEXT = """
 🤖 Telegram Quiz Bot
 
@@ -408,6 +521,9 @@ HELP_TEXT = """
 /song — Reply किए गए Telegram audio को दोबारा भेजें
 
 🌟 Fun:
+/image <prompt> — FLUX से AI image
+/image <model> <prompt> — चुने हुए model से image
+/imagemodels — उपलब्ध image models
 /shayari
 /gm
 /confess <message> — DM से confession
@@ -873,6 +989,10 @@ def main():
     app.add_handler(CommandHandler("schedulelist", vip_scheduler.cmd_schedulelist))
     app.add_handler(CommandHandler("schedulereset", vip_scheduler.cmd_schedulereset))
 
+
+    # AI image handlers
+    app.add_handler(CommandHandler("image", cmd_image))
+    app.add_handler(CommandHandler("imagemodels", cmd_imagemodels))
 
     # Fun handlers
     app.add_handler(CommandHandler("shayari", cmd_shayari))
