@@ -291,7 +291,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def bridgehelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Admin chat control: rename, remove/ban, delete, pin/unpin, intro\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
 
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -319,6 +319,8 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def group_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await admin_controller(update, context):
+        return
     await maybe_react(update, context)
     await chat_message(update, context)
 
@@ -514,6 +516,161 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         CHAT_MEMORY[key].append({"role": "user", "content": question})
         CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
         await message.reply_text(answer, do_quote=True)
+
+
+async def _is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not update.effective_chat or not update.effective_user:
+        return False
+    try:
+        member = await context.bot.get_chat_member(
+            update.effective_chat.id, update.effective_user.id
+        )
+        return member.status in {"administrator", "creator"}
+    except Exception:
+        log.exception("Could not verify group admin")
+        return False
+
+
+async def _target_is_admin(
+    chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in {"administrator", "creator"}
+    except Exception:
+        return False
+
+
+async def admin_controller(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle a safe, deterministic set of natural-language group admin actions."""
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if (
+        not message
+        or not message.text
+        or not chat
+        or chat.type not in ("group", "supergroup")
+        or not user
+    ):
+        return False
+
+    text = message.text.strip()
+    low = text.casefold()
+    control_words = (
+        "group ka naam", "group name", "iska naam", "isko hata", "ise hata",
+        "isko nik", "ise nik", "remove karo", "kick karo", "ban karo",
+        "message delete", "delete karo", "pin karo", "pin kar do",
+        "unpin karo", "mera parichay", "mera intro", "introduce me",
+    )
+    if not any(word in low for word in control_words):
+        return False
+
+    if not await _is_group_admin(update, context):
+        await message.reply_text(
+            "Ye group-control request sirf group admin de sakte hain 🔐",
+            do_quote=True,
+        )
+        return True
+
+    try:
+        rename = re.search(
+            r"(?:group\s+ka\s+naam|group\s+name|iska\s+naam)\s+(.+?)\s+"
+            r"(?:kar\s*do|rakh\s*do|change\s*kar\s*do)$",
+            text,
+            flags=re.I,
+        )
+        if rename:
+            title = rename.group(1).strip(" .,!?:;-")[:128]
+            if len(title) < 2:
+                await message.reply_text("Naya group name thoda clearly likhiye.")
+                return True
+            await context.bot.set_chat_title(chat.id, title)
+            await message.reply_text(f"Ho gaya janab 😌 Group ka naya naam: {title}")
+            return True
+
+        replied = message.reply_to_message
+
+        if any(x in low for x in ("mera parichay", "mera intro", "introduce me")):
+            name = user.full_name or user.first_name or "Group Admin"
+            username = f"@{user.username}" if user.username else ""
+            await message.reply_text(
+                f"✨ Suniye sab log! Ye hain {name} {username}—hamare group ke admin. "
+                "Group ko sambhalte hain, sabki help karte hain aur inki baat ko thoda "
+                "seriously lena banta hai 😌👑",
+                do_quote=True,
+            )
+            return True
+
+        if any(x in low for x in ("pin karo", "pin kar do")) and "unpin" not in low:
+            if not replied:
+                await message.reply_text("Jis message ko pin karna hai, uspar reply kijiye.")
+                return True
+            await context.bot.pin_chat_message(
+                chat.id, replied.message_id, disable_notification=True
+            )
+            await message.reply_text("Message pin kar diya 📌")
+            return True
+
+        if "unpin karo" in low:
+            if replied:
+                await context.bot.unpin_chat_message(chat.id, replied.message_id)
+            else:
+                await context.bot.unpin_all_chat_messages(chat.id)
+            await message.reply_text("Unpin kar diya.")
+            return True
+
+        if "message delete" in low or ("delete karo" in low and replied is not None):
+            if not replied:
+                await message.reply_text("Delete karne wale message par reply kijiye.")
+                return True
+            await context.bot.delete_message(chat.id, replied.message_id)
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return True
+
+        remove_requested = any(
+            x in low
+            for x in (
+                "isko hata", "ise hata", "isko nik", "ise nik",
+                "remove karo", "kick karo", "ban karo",
+            )
+        )
+        if remove_requested:
+            target = replied.from_user if replied else None
+            if not target:
+                await message.reply_text(
+                    "Jise remove karna hai, uske message par reply karke “isko hatao” likhiye."
+                )
+                return True
+            if target.id == context.bot.id or target.id == user.id:
+                await message.reply_text("Is target par ye action nahi kar sakti.")
+                return True
+            if await _target_is_admin(chat.id, target.id, context):
+                await message.reply_text("Main kisi group admin ko remove nahi karungi.")
+                return True
+            await context.bot.ban_chat_member(chat.id, target.id)
+            permanent = "ban karo" in low
+            if not permanent:
+                await context.bot.unban_chat_member(
+                    chat.id, target.id, only_if_banned=True
+                )
+            action = "ban" if permanent else "remove"
+            await message.reply_text(
+                f"{target.full_name or 'User'} ko group se {action} kar diya."
+            )
+            return True
+    except Exception as exc:
+        log.exception("Admin controller action failed")
+        await message.reply_text(
+            "Action complete nahi hua. Sakhi ko group mein required admin permission "
+            f"dijiye. ({type(exc).__name__})"
+        )
+        return True
+
+    return False
 
 
 def main() -> None:
