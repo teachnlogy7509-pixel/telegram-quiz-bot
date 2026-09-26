@@ -60,19 +60,87 @@ async def observe_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Could not remember group")
 
 
-async def private_link_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """In DMs, allow only /link and the owner's /broadcast command."""
+async def private_support_relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Private chat is only an admin support relay plus /link."""
     chat = update.effective_chat
     if not chat or chat.type != "private":
         return
     message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        raise ApplicationHandlerStop
+
     text = (message.text or "").strip() if message else ""
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
-    user_id = update.effective_user.id if update.effective_user else 0
+
+    user_id = user.id
     if command == "/link":
         return
     if command == "/broadcast" and user_id in ADMIN_IDS:
         return
+
+    # The admin replies directly to the user's forwarded/copied support message.
+    if user_id in ADMIN_IDS:
+        replied = message.reply_to_message
+        route = db.get_support_route(replied.message_id) if replied else None
+        if route:
+            try:
+                await context.bot.copy_message(
+                    chat_id=int(route["user_id"]),
+                    from_chat_id=chat.id,
+                    message_id=message.message_id,
+                )
+                await message.reply_text(
+                    f"✅ Reply {route.get('user_name') or 'user'} को भेज दिया।"
+                )
+            except Exception as exc:
+                logger.exception("Admin support reply failed")
+                await message.reply_text(f"❌ Reply नहीं भेजा गया: {str(exc)[:180]}")
+            raise ApplicationHandlerStop
+        if command == "/start":
+            await message.reply_text(
+                "🛠 Admin Support Inbox\n\n"
+                "किसी forwarded user message पर Reply करें—आपका reply उसी user को "
+                "private chat में पहुँच जाएगा।\n\n"
+                "/broadcast भी यहाँ काम करेगा।"
+            )
+        raise ApplicationHandlerStop
+
+    if command == "/start":
+        await message.reply_text(
+            "🙏 नमस्ते! यह bot का private Help Desk है।\n\n"
+            "अपना सवाल या message सीधे यहाँ भेजिए। वह privately admin तक पहुँच जाएगा। "
+            "Admin का reply भी इसी chat में आएगा।\n\n"
+            "🔗 Rathod Hub account जोड़ने के लिए: /link CODE\n\n"
+            "Quiz और बाकी commands केवल group में काम करते हैं।"
+        )
+        raise ApplicationHandlerStop
+
+    # Every other private message is delivered to the primary admin.
+    admin_id = ADMIN_IDS[0]
+    try:
+        try:
+            delivered = await context.bot.forward_message(
+                chat_id=admin_id,
+                from_chat_id=chat.id,
+                message_id=message.message_id,
+            )
+        except Exception:
+            delivered = await context.bot.copy_message(
+                chat_id=admin_id,
+                from_chat_id=chat.id,
+                message_id=message.message_id,
+            )
+        db.save_support_route(delivered.message_id, user.id, user.full_name)
+        await message.reply_text(
+            "✅ आपका message admin को भेज दिया गया है। Reply आने पर यहीं दिखाई देगा।"
+        )
+    except Exception as exc:
+        logger.exception("Private support forwarding failed")
+        await message.reply_text(
+            f"❌ अभी message admin तक नहीं पहुँच पाया। बाद में फिर कोशिश करें। "
+            f"({type(exc).__name__})"
+        )
     raise ApplicationHandlerStop
 
 
@@ -1138,9 +1206,9 @@ def main():
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
 
-    # Observe groups before normal handlers; block every private feature except linking.
+    # Observe groups before normal handlers; use private chat only for support relay and linking.
     app.add_handler(TypeHandler(Update, observe_group), group=-200)
-    app.add_handler(TypeHandler(Update, private_link_only), group=-100)
+    app.add_handler(TypeHandler(Update, private_support_relay), group=-100)
 
     # Admin Control Handlers
     app.add_handler(CommandHandler("on", cmd_bot_on))

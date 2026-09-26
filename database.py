@@ -83,6 +83,15 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS support_routes (
+            admin_message_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            user_name TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Backward-compatible schema migration for *all* known tables.
     # CREATE TABLE IF NOT EXISTS does not modify an existing table, so older
     # scores.db files can keep old schemas. Add any missing non-key columns
@@ -163,6 +172,34 @@ def get_known_groups():
             rows.append({"chat_id": chat_id, "title": "", "last_seen": ""})
     conn.close()
     return rows
+
+
+def save_support_route(admin_message_id: int, user_id: int, user_name: str = ""):
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO support_routes
+           (admin_message_id,user_id,user_name,created_at)
+           VALUES(?,?,?,datetime('now'))""",
+        (int(admin_message_id), int(user_id), str(user_name or "")[:120]),
+    )
+    # Keep the routing table bounded while preserving recent conversations.
+    conn.execute(
+        """DELETE FROM support_routes WHERE admin_message_id IN (
+           SELECT admin_message_id FROM support_routes
+           ORDER BY created_at DESC LIMIT -1 OFFSET 10000)"""
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_support_route(admin_message_id: int):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM support_routes WHERE admin_message_id=?",
+        (int(admin_message_id),),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def set_bot_status(chat_id: int, active: bool):
