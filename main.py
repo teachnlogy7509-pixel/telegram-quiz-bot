@@ -17,7 +17,8 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                         MessageHandler, PollAnswerHandler, filters, ConversationHandler, CallbackQueryHandler)
+                         MessageHandler, PollAnswerHandler, filters, ConversationHandler,
+                         CallbackQueryHandler, TypeHandler, ApplicationHandlerStop)
 
 import config
 import database as db
@@ -34,6 +35,7 @@ import premium_hub
 import scheduler as sched_module
 import supabase_sync
 import study_notes
+import neet_hindi
 from quiz import verify_gemini_key, verify_groq_keys, generate_voice_response, generate_questions_from_pdf
 
 # Logging
@@ -46,6 +48,82 @@ logger = logging.getLogger(__name__)
 
 # Admin Settings
 ADMIN_IDS = [8043570403]
+
+
+async def observe_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remember every group where the bot receives an update for broadcasts."""
+    chat = update.effective_chat
+    if chat and chat.type in ("group", "supergroup"):
+        try:
+            db.remember_group(chat.id, chat.title or "")
+        except Exception:
+            logger.exception("Could not remember group")
+
+
+async def private_link_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """In DMs, allow only /link and the owner's /broadcast command."""
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
+    message = update.effective_message
+    text = (message.text or "").strip() if message else ""
+    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
+    user_id = update.effective_user.id if update.effective_user else 0
+    if command == "/link":
+        return
+    if command == "/broadcast" and user_id in ADMIN_IDS:
+        return
+    raise ApplicationHandlerStop
+
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner-only broadcast to every group previously seen by the bot."""
+    if not update.effective_user or update.effective_user.id not in ADMIN_IDS:
+        return
+    message = update.effective_message
+    replied = message.reply_to_message if message else None
+    text = " ".join(context.args or []).strip()
+    if not replied and not text:
+        return await message.reply_text(
+            "इस्तेमाल: /broadcast <message>\n"
+            "या किसी message/photo पर reply करके /broadcast भेजें।"
+        )
+    groups = db.get_known_groups()
+    if not groups:
+        return await message.reply_text(
+            "अभी कोई known group नहीं है। Bot को group में एक update मिलने दीजिए।"
+        )
+    sent = failed = 0
+    status = await message.reply_text(f"📣 Broadcast शुरू—{len(groups)} groups…")
+    for row in groups:
+        try:
+            if replied:
+                await context.bot.copy_message(
+                    chat_id=int(row["chat_id"]),
+                    from_chat_id=update.effective_chat.id,
+                    message_id=replied.message_id,
+                )
+            else:
+                await context.bot.send_message(int(row["chat_id"]), text)
+            sent += 1
+        except Exception:
+            failed += 1
+            logger.warning("Broadcast failed for chat %s", row["chat_id"])
+        await asyncio.sleep(0.06)
+    await status.edit_text(f"✅ Broadcast complete\nSent: {sent}\nFailed: {failed}")
+
+
+async def announce_left_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    member = message.left_chat_member if message else None
+    if not member or member.is_bot:
+        return
+    actor = message.from_user
+    if actor and actor.id != member.id:
+        text = f"👋 {member.full_name} को group से हटा दिया गया।"
+    else:
+        text = f"👋 {member.full_name} ने group छोड़ दिया।"
+    await message.reply_text(text)
 
 # Upgrade every /quiz, /pyq, scheduled and PDF quiz with persistent anti-repeat memory.
 multi_provider.install(quiz_module)
@@ -167,6 +245,9 @@ async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context):
         return
     if not update.message:
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("🔐 `/link CODE` केवल bot के private chat में भेजें।", parse_mode=ParseMode.MARKDOWN)
         return
 
     args = context.args or []
@@ -572,6 +653,7 @@ HELP_TEXT = """
 ⚙️ Admin Controls:
 /on — Bot ON
 /off — Bot OFF
+/broadcast <message> — सभी known groups में broadcast
 
 👑 Premium:
 /hub — Premium command center
@@ -588,6 +670,10 @@ HELP_TEXT = """
 /pdfquiz <PDF name> <number> — PDF से quiz
 /timer <15|30|45|60> — Quiz timer
 /qtypes — VIP question formats और anti-repeat status
+/neetquiz <topic> <number> — Hindi NEET-level quiz, बिना timer
+/neetschedule HH:MM <topic> <number> — Daily timer-free NEET quiz
+/neetschedules — NEET schedules देखें
+/neetoff <id|all> — NEET schedule हटाएँ
 /chatid — Current group Chat ID
 /testupdate — Admin notification test
 
@@ -994,6 +1080,7 @@ async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _post_init(application: Application):
     vip_scheduler.init_scheduler(application)
+    neet_hindi.init_scheduler(application)
     app_update_notifier.init(application)
     await premium_hub.init_commands(application)
     await rathod_ai.install(application, db, quiz_module, vip_commands, ADMIN_IDS)
@@ -1051,9 +1138,14 @@ def main():
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
 
+    # Observe groups before normal handlers; block every private feature except linking.
+    app.add_handler(TypeHandler(Update, observe_group), group=-200)
+    app.add_handler(TypeHandler(Update, private_link_only), group=-100)
+
     # Admin Control Handlers
     app.add_handler(CommandHandler("on", cmd_bot_on))
     app.add_handler(CommandHandler("off", cmd_bot_off))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
 
     # Link Handler
     app.add_handler(CommandHandler("link", cmd_link))
@@ -1066,6 +1158,10 @@ def main():
     app.add_handler(CommandHandler("testupdate", cmd_testupdate))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("pyq", cmd_pyq))
+    app.add_handler(CommandHandler("neetquiz", neet_hindi.cmd_neetquiz))
+    app.add_handler(CommandHandler("neetschedule", neet_hindi.cmd_neetschedule))
+    app.add_handler(CommandHandler("neetschedules", neet_hindi.cmd_neetschedules))
+    app.add_handler(CommandHandler("neetoff", neet_hindi.cmd_neetoff))
     app.add_handler(CommandHandler("proquiz", lambda u,c: vip_commands.cmd_proquiz(u,c,quiz_module,db)))
     app.add_handler(CommandHandler("aistatus", multi_provider.cmd_aistatus))
     app.add_handler(CommandHandler("hub", lambda u,c: premium_hub.cmd_hub(u,c,db,leaderboard)))
@@ -1116,6 +1212,7 @@ def main():
     app.add_handler(CommandHandler('files', list_files))
 
     # General Handlers
+    app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, announce_left_member))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_normal_message))
     app.add_handler(PollAnswerHandler(on_poll_answer))
     app.add_error_handler(error_handler)

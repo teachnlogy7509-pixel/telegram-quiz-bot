@@ -75,6 +75,14 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS known_groups (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT,
+            last_seen TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     # Backward-compatible schema migration for *all* known tables.
     # CREATE TABLE IF NOT EXISTS does not modify an existing table, so older
     # scores.db files can keep old schemas. Add any missing non-key columns
@@ -123,6 +131,38 @@ def init_db():
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully. Using %s", DB_NAME)
+
+
+def remember_group(chat_id: int, title: str = ""):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO known_groups(chat_id,title,last_seen) VALUES(?,?,datetime('now'))
+           ON CONFLICT(chat_id) DO UPDATE SET
+             title=excluded.title,last_seen=datetime('now')""",
+        (int(chat_id), str(title or "")[:200]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_known_groups():
+    conn = get_connection()
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT chat_id,title,last_seen FROM known_groups ORDER BY last_seen DESC"
+        ).fetchall()
+    ]
+    known_ids = {int(row["chat_id"]) for row in rows}
+    # Backfill groups already present in the score database from older versions.
+    for row in conn.execute(
+        "SELECT DISTINCT chat_id FROM users WHERE chat_id < 0"
+    ).fetchall():
+        chat_id = int(row["chat_id"])
+        if chat_id not in known_ids:
+            rows.append({"chat_id": chat_id, "title": "", "last_seen": ""})
+    conn.close()
+    return rows
 
 
 def set_bot_status(chat_id: int, active: bool):

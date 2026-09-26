@@ -311,12 +311,21 @@ poll_to_chat: dict[str, int] = {}
 
 
 def _build_prompt(topic: str, count: int, style: str = "quiz") -> str:
-    pyq_hint = (
-        " Model the questions after Indian competitive exam PYQ style "
-        "(NEET/JEE), focusing on conceptual depth."
-        if style == "pyq"
-        else ""
-    )
+    if style == "pyq":
+        pyq_hint = (
+            " Model the questions after Indian competitive exam PYQ style "
+            "(NEET/JEE), focusing on conceptual depth."
+        )
+    elif style == "neet_hindi":
+        pyq_hint = (
+            " सभी प्रश्न और विकल्प स्वाभाविक, स्पष्ट हिंदी में लिखें; केवल standard "
+            "NCERT scientific terms जरूरत पर English में brackets में दें। स्तर बिल्कुल "
+            "NEET/NCERT का हो—fact recall, conceptual application, statement-based और "
+            "PYQ-inspired traps का संतुलित मिश्रण रखें। बहुत आसान school-level या JEE-only "
+            "questions न दें। कोई question repeat या केवल शब्द बदलकर duplicate न करें।"
+        )
+    else:
+        pyq_hint = ""
     return textwrap.dedent(
         f"""
         Generate exactly {count} multiple-choice questions about: "{topic}".{pyq_hint}
