@@ -126,7 +126,7 @@ async def private_support_relay(update: Update, context: ContextTypes.DEFAULT_TY
     # The admin replies directly to the user's forwarded/copied support message.
     if user_id in ADMIN_IDS:
         replied = message.reply_to_message
-        route = db.get_support_route(replied.message_id) if replied else None
+        route = db.get_support_route(user_id, replied.message_id) if replied else None
         if route:
             try:
                 await context.bot.copy_message(
@@ -160,30 +160,37 @@ async def private_support_relay(update: Update, context: ContextTypes.DEFAULT_TY
         )
         raise ApplicationHandlerStop
 
-    # Every other private message is delivered to the primary admin.
-    admin_id = ADMIN_IDS[0]
-    try:
+    # Every other private message is delivered separately to every configured admin.
+    delivered_count = 0
+    for admin_id in ADMIN_IDS:
         try:
-            delivered = await context.bot.forward_message(
-                chat_id=admin_id,
-                from_chat_id=chat.id,
-                message_id=message.message_id,
+            try:
+                delivered = await context.bot.forward_message(
+                    chat_id=admin_id,
+                    from_chat_id=chat.id,
+                    message_id=message.message_id,
+                )
+            except Exception:
+                delivered = await context.bot.copy_message(
+                    chat_id=admin_id,
+                    from_chat_id=chat.id,
+                    message_id=message.message_id,
+                )
+            db.save_support_route(
+                admin_id, delivered.message_id, user.id, user.full_name
             )
+            delivered_count += 1
         except Exception:
-            delivered = await context.bot.copy_message(
-                chat_id=admin_id,
-                from_chat_id=chat.id,
-                message_id=message.message_id,
-            )
-        db.save_support_route(delivered.message_id, user.id, user.full_name)
+            logger.exception("Private support forwarding failed for admin %s", admin_id)
+
+    if delivered_count:
         await message.reply_text(
-            "✅ आपका message admin को भेज दिया गया है। Reply आने पर यहीं दिखाई देगा।"
+            "✅ आपका message admin team को भेज दिया गया है। "
+            "Reply आने पर यहीं दिखाई देगा।"
         )
-    except Exception as exc:
-        logger.exception("Private support forwarding failed")
+    else:
         await message.reply_text(
-            f"❌ अभी message admin तक नहीं पहुँच पाया। बाद में फिर कोशिश करें। "
-            f"({type(exc).__name__})"
+            "❌ अभी message admin team तक नहीं पहुँच पाया। बाद में फिर कोशिश करें।"
         )
     raise ApplicationHandlerStop
 
