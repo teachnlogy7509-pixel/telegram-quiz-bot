@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
 import json
 import logging
 import os
@@ -291,7 +292,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def bridgehelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Admin chat control: rename, remove/ban, delete, pin/unpin, intro\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Admin chat control: rename, description, PFP, remove/ban, delete, pin/unpin, intro, safe roast\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
 
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -562,6 +563,10 @@ async def admin_controller(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "isko nik", "ise nik", "remove karo", "kick karo", "ban karo",
         "message delete", "delete karo", "pin karo", "pin kar do",
         "unpin karo", "mera parichay", "mera intro", "introduce me",
+        "group ka description", "group ki description", "group description",
+        "group ki pfp", "group ka pfp", "group photo", "pfp hata",
+        "pfp laga", "photo hata", "description dalo", "description daalo",
+        "isko roast", "ise roast", "roast karo",
     )
     if not any(word in low for word in control_words):
         return False
@@ -589,7 +594,56 @@ async def admin_controller(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await message.reply_text(f"Ho gaya janab 😌 Group ka naya naam: {title}")
             return True
 
+        description = re.search(
+            r"(?:group\s+k[ai]\s+description|group\s+description)\s+(.+?)\s+"
+            r"(?:kar\s*do|laga\s*do|d+a+a?l\s*do|set\s*kar\s*do|change\s*kar\s*do)$",
+            text,
+            flags=re.I | re.S,
+        )
+        if description:
+            value = description.group(1).strip()[:255]
+            if not value:
+                await message.reply_text("Group description clearly likhiye.")
+                return True
+            await context.bot.set_chat_description(chat.id, value)
+            await message.reply_text("Group description update kar di ✨")
+            return True
+
         replied = message.reply_to_message
+
+        remove_photo = any(
+            x in low
+            for x in (
+                "group ki pfp hata", "group ka pfp hata", "group photo hata",
+                "pfp hata do", "photo hata do",
+            )
+        )
+        if remove_photo:
+            await context.bot.delete_chat_photo(chat.id)
+            await message.reply_text("Group photo hata di.")
+            return True
+
+        set_photo = any(
+            x in low
+            for x in (
+                "group ki pfp laga", "group ka pfp laga", "group photo laga",
+                "pfp laga", "pfp set kar", "photo set kar",
+            )
+        )
+        if set_photo:
+            if not replied or not replied.photo:
+                await message.reply_text(
+                    "Nayi group photo wale message par reply karke “group ki PFP laga do” "
+                    "likhiye."
+                )
+                return True
+            telegram_file = await context.bot.get_file(replied.photo[-1].file_id)
+            photo_bytes = await telegram_file.download_as_bytearray()
+            photo_file = io.BytesIO(photo_bytes)
+            photo_file.name = "group-photo.jpg"
+            await context.bot.set_chat_photo(chat.id, photo=photo_file)
+            await message.reply_text("Nayi group PFP laga di 😌🖼️")
+            return True
 
         if any(x in low for x in ("mera parichay", "mera intro", "introduce me")):
             name = user.full_name or user.first_name or "Group Admin"
@@ -600,6 +654,26 @@ async def admin_controller(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 "seriously lena banta hai 😌👑",
                 do_quote=True,
             )
+            return True
+
+        if any(x in low for x in ("isko roast", "ise roast", "roast karo")):
+            target = replied.from_user if replied else None
+            if not target or target.is_bot:
+                await message.reply_text(
+                    "Jise roast karna hai, uske message par reply karke “isko roast karo” "
+                    "likhiye."
+                )
+                return True
+            source_text = (replied.text or replied.caption or "")[:500]
+            roast_prompt = (
+                f"{target.full_name} ke liye Hindi/Hinglish me 2-4 lines ka witty, "
+                "playful group roast likho. Unka message tha: "
+                f"{source_text!r}. Roast funny aur clever ho, lekin gaali, threat, sexual "
+                "harassment, protected traits, body shaming, family, poverty, illness ya "
+                "trauma par attack bilkul na ho. Friendly emoji use karo."
+            )
+            roast = await ask_ai(roast_prompt, [])
+            await message.reply_text(roast, do_quote=True)
             return True
 
         if any(x in low for x in ("pin karo", "pin kar do")) and "unpin" not in low:
