@@ -46,8 +46,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Admin Settings
-ADMIN_IDS = [8043570403]
+# Admin Settings — Railway variable supports one or more comma/space-separated IDs.
+def _load_admin_ids() -> list[int]:
+    raw = os.getenv("ADMIN_IDS", "")
+    ids = {
+        int(value)
+        for value in re.findall(r"\d+", raw)
+        if value and int(value) > 0
+    }
+    # Backward-compatible owner fallback when Railway variable is absent.
+    if not ids:
+        ids.add(8043570403)
+    return sorted(ids)
+
+
+ADMIN_IDS = _load_admin_ids()
+logger.info("Loaded %s admin ID(s): %s", len(ADMIN_IDS), ADMIN_IDS)
 
 OWNER_INTRO = """
 👑 *RATHOD HUB के Founder & Owner*
