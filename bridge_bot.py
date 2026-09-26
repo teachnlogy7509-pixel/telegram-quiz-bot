@@ -292,7 +292,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def bridgehelp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Admin chat control: rename, description, PFP, remove/ban, delete, pin/unpin, intro, safe roast\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
+    await update.effective_message.reply_text("💙 <b>RATHOD SAKHI</b>\n\n• App updates\n• 30-minute score digest\n• NEET 720, Daily 9 PM aur Live Quiz\n• Winners/leaderboard\n• New member welcome\n• /ask se online AI ya offline help\n• Light emoji reactions when Telegram permits\n• Admin chat control: rename, description, PFP, remove/ban, delete, pin/unpin, intro, safe roast\n• Auto moderation: member links and QR/scanner images removed\n• Daily motivation: approximately 12:00 PM IST, once per day\n\n" + BOT_BYLINE, parse_mode=ParseMode.HTML)
 
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -320,6 +320,8 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def group_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await moderate_member_link(update, context):
+        return
     if await admin_controller(update, context):
         return
     await maybe_react(update, context)
@@ -542,6 +544,95 @@ async def _target_is_admin(
         return False
 
 
+def _message_has_link(message) -> bool:
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    if any(str(entity.type) in {"url", "text_link"} for entity in entities):
+        return True
+    text = f"{message.text or ''} {message.caption or ''}"
+    return bool(
+        re.search(
+            r"(?i)(?:https?://|www\.|t\.me/|telegram\.me/|"
+            r"\b[a-z0-9][a-z0-9.-]*\.(?:com|in|net|org|me|io|co|xyz|app)\b)",
+            text,
+        )
+    )
+
+
+async def moderate_member_link(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or chat.type not in ("group", "supergroup"):
+        return False
+    if not _message_has_link(message) or await _is_group_admin(update, context):
+        return False
+    try:
+        await message.delete()
+        await context.bot.send_message(
+            chat.id,
+            f"{user.first_name or 'Member'}, group mein members ke links allowed nahi hain 🔗🚫",
+        )
+    except Exception:
+        log.exception("Could not delete member link")
+    return True
+
+
+def _image_contains_qr(raw: bytes) -> bool:
+    try:
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return False
+        data, points, _ = cv2.QRCodeDetector().detectAndDecode(image)
+        return bool(data) or points is not None
+    except Exception:
+        log.exception("QR scan failed")
+        return False
+
+
+async def group_media_moderation(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat:
+        return
+    if await moderate_member_link(update, context):
+        return
+    if await _is_group_admin(update, context):
+        return
+
+    file_id = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif (
+        message.document
+        and str(message.document.mime_type or "").lower().startswith("image/")
+    ):
+        file_id = message.document.file_id
+    if not file_id:
+        return
+
+    try:
+        telegram_file = await context.bot.get_file(file_id)
+        raw = bytes(await telegram_file.download_as_bytearray())
+        if not await asyncio.to_thread(_image_contains_qr, raw):
+            return
+        await message.delete()
+        await context.bot.send_message(
+            chat.id,
+            f"{user.first_name or 'Member'}, QR code/scanner image group mein allowed "
+            "nahi hai 🚫",
+        )
+    except Exception:
+        log.exception("Could not moderate QR image")
+
+
 async def admin_controller(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Handle a safe, deterministic set of natural-language group admin actions."""
     message = update.effective_message
@@ -753,6 +844,11 @@ def main() -> None:
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS
+        & (filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.ANIMATION | filters.AUDIO),
+        group_media_moderation,
+    ))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, group_activity))
     log.info("%s started; OpenRouter=%s Gemini=%s Groq=%s; daily motivation=%02d:00 IST", BOT_NAME, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY), MOTIVATION_HOUR)
