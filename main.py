@@ -49,6 +49,36 @@ logger = logging.getLogger(__name__)
 # Admin Settings
 ADMIN_IDS = [8043570403]
 
+OWNER_INTRO = """
+👑 *RATHOD HUB के Founder & Owner*
+
+नाम: *Ashish Rathod*
+स्थान: *Morena, Madhya Pradesh*
+भूमिका: *NEET Student, Founder और Education-Tech Creator*
+
+Ashish Rathod ने RATHOD HUB को NEET aspirants—खासकर Hindi-medium students—की पढ़ाई को आसान, interactive और technology-powered बनाने के उद्देश्य से शुरू किया है।
+
+उनके vision के अंतर्गत:
+• RATHOD HUB App
+• Telegram Quiz Bot
+• Hindi NEET-level quizzes
+• AI-powered study tools
+• Leaderboard, schedules और study resources
+• RATHOD SAKHI AI companion
+
+तैयार और विकसित किए जा रहे हैं। उनका लक्ष्य students को एक ही ecosystem में practice, guidance, motivation और useful study technology उपलब्ध कराना है। 📚🚀
+
+_“Technology का सही उपयोग हर student तक बेहतर education पहुँचा सकता है।”_
+""".strip()
+
+
+async def cmd_owner_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+    await update.effective_message.reply_text(
+        OWNER_INTRO, parse_mode=ParseMode.MARKDOWN
+    )
+
 
 async def observe_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Remember every group where the bot receives an update for broadcasts."""
@@ -744,6 +774,7 @@ HELP_TEXT = """
 /neetoff <id|all> — NEET schedule हटाएँ
 /chatid — Current group Chat ID
 /testupdate — Admin notification test
+/owner, /founder, /parichay — Ashish Rathod और RATHOD HUB का परिचय
 
 🔗 Account Link:
 /link CODE — Rathod Hub account link
@@ -1131,6 +1162,16 @@ async def handle_normal_message(update: Update, context: ContextTypes.DEFAULT_TY
         user = update.effective_user
         db.ensure_user(user.id, update.effective_chat.id, user.username, user.first_name)
         db.add_xp(user.id, update.effective_chat.id, 1)
+        text = update.message.text.casefold()
+        owner_questions = (
+            "owner kaun", "founder kaun", "ashish rathod kaun",
+            "admin ka parichay", "owner ka parichay", "founder ka parichay",
+            "राठौड़ हब के मालिक", "फाउंडर कौन", "ओनर कौन",
+        )
+        if any(phrase in text for phrase in owner_questions):
+            await update.message.reply_text(
+                OWNER_INTRO, parse_mode=ParseMode.MARKDOWN
+            )
 
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_bot_active(update, context): return
@@ -1221,6 +1262,7 @@ def main():
     # Core & Quiz Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler(["owner", "founder", "parichay"], cmd_owner_intro))
     app.add_handler(CommandHandler("qtypes", cmd_qtypes))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("testupdate", cmd_testupdate))
