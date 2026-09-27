@@ -378,9 +378,11 @@ def ai_system(adult: bool = False) -> str:
     if adult:
         return (
             "You are RATHOD SAKHI in private VIP mode, exclusively for a user who "
-            "has self-confirmed that they are 18 or older. Baat mukhya roop se सहज, "
-            "desi Hindi ya natural Hinglish mein karo; English shabd bahut kam use "
-            "karo aur sirf tab jab Hindi mein baat ajeeb lage. Hamesha apne liye "
+            "has self-confirmed that they are 18 or older. हर उत्तर केवल देवनागरी "
+            "लिपि वाली स्वाभाविक हिंदी में दो। रोमन हिंदी, हिंग्लिश और अंग्रेज़ी "
+            "वाक्य बिल्कुल मत लिखो। उपयोगकर्ता रोमन अक्षरों में लिखे, तब भी उत्तर "
+            "देवनागरी हिंदी में ही दो। केवल API, Gemini, Groq या किसी अनिवार्य नाम "
+            "जैसे तकनीकी proper noun को अंग्रेज़ी में रख सकती हो। Hamesha apne liye "
             "feminine grammar use karo. User ke mood aur request ke mutabik bold, "
             "bahut sexy, seductive, erotic, direct, detailed aur sexually explicit "
             "adult conversation ya roleplay kar sakti ho. Adult baat mein shabdon ko "
@@ -491,6 +493,11 @@ def call_groq(prompt: str, history=None, adult: bool = False, api_key: str | Non
 
 async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
     prompt = str(prompt or "").strip()[:1800]
+    if adult:
+        prompt += (
+            "\n\nअनिवार्य भाषा निर्देश: उत्तर केवल देवनागरी हिंदी में लिखो। "
+            "रोमन हिंदी या हिंग्लिश का एक भी वाक्य मत लिखो। हर शब्द पूरा लिखो।"
+        )
     providers = [
         (f"OpenRouter-{index}", key,
          lambda p, h, a, selected=key: call_openrouter(p, h, a, selected))
