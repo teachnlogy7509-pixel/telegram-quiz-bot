@@ -34,13 +34,18 @@ POLL_SECONDS = max(30, int(os.getenv("BRIDGE_POLL_SECONDS", "60")))
 # Sakhi motivation is intentionally limited to one message during the noon hour.
 MOTIVATION_HOUR = max(0, min(23, int(os.getenv("BRIDGE_MOTIVATION_HOUR", "12"))))
 SCORE_DELAY = max(30, int(os.getenv("BRIDGE_SCORE_DELAY_MINUTES", "30")))
-OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_KEYS = [
+    value for value in (
+        os.getenv("OPENROUTER_API_KEY", ""),
+        os.getenv("OPENROUTER_API_KEY_2", ""),
+    ) if value.strip()
+]
+OPENROUTER_KEY = OPENROUTER_KEYS[0] if OPENROUTER_KEYS else ""
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
 GEMINI_KEYS = [
     value for value in (
         os.getenv("GEMINI_API_KEY", ""),
         os.getenv("GEMINI_API_KEY_2", ""),
-        os.getenv("GEMINI_API_KEY_3", ""),
     ) if value.strip()
 ]
 GEMINI_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ""
@@ -49,7 +54,6 @@ GROQ_KEYS = [
     value for value in (
         os.getenv("GROQ_API_KEY", ""),
         os.getenv("GROQ_API_KEY_2", ""),
-        os.getenv("GROQ_API_KEY_3", ""),
     ) if value.strip()
 ]
 GROQ_KEY = GROQ_KEYS[0] if GROQ_KEYS else ""
@@ -378,9 +382,13 @@ def ai_system(adult: bool = False) -> str:
             "desi Hindi ya natural Hinglish mein karo; English shabd bahut kam use "
             "karo aur sirf tab jab Hindi mein baat ajeeb lage. Hamesha apne liye "
             "feminine grammar use karo. User ke mood aur request ke mutabik bold, "
-            "seductive, erotic, detailed aur sexually explicit adult conversation "
-            "ya roleplay kar sakti ho. Baat ko adhoora, clinical ya lecture jaisa mat "
-            "banao. Har jawab ko natural, expressive aur intimate rakho, aur lagbhag "
+            "bahut sexy, seductive, erotic, direct, detailed aur sexually explicit "
+            "adult conversation ya roleplay kar sakti ho. Adult baat mein shabdon ko "
+            "censor, mask, half-spell ya asterisks ke peeche mat chhupao; har shabd aur "
+            "har sentence poora likho. Consensual context mein ladke se natural direct "
+            "phrases bol sakti ho, jaise 'main hila dungi', jab wahi tone conversation "
+            "mein fit ho. Baat ko adhoora, clinical ya lecture jaisa mat banao. Har "
+            "jawab ko natural, expressive aur intimate rakho, aur lagbhag "
             "har paragraph mein 1-3 suitable emojis lagao—jaise 😏, 🔥, 💋, 🙈, "
             "❤️‍🔥, 🫦, 😉, 🥵—lekin ek hi emoji baar-baar mat dohrao. Markdown, "
             "asterisks, stars, headings, bullet formatting, bold markers, ya ** kabhi "
@@ -440,12 +448,12 @@ def messages(prompt: str, history=None, adult: bool = False) -> list[dict[str, s
             + [{"role": "user", "content": prompt}])
 
 
-def call_openrouter(prompt: str, history=None, adult: bool = False) -> str:
+def call_openrouter(prompt: str, history=None, adult: bool = False, api_key: str | None = None) -> str:
     data = post_json(
         "https://openrouter.ai/api/v1/chat/completions",
         {"model": OPENROUTER_MODEL, "messages": messages(prompt, history, adult),
-         "temperature": 0.88, "max_tokens": 650},
-        {"Authorization": f"Bearer {OPENROUTER_KEY}",
+         "temperature": 0.88, "max_tokens": 900},
+        {"Authorization": f"Bearer {api_key or OPENROUTER_KEY}",
          "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/",
          "X-Title": BOT_NAME},
     )
@@ -465,7 +473,7 @@ def call_gemini(prompt: str, history=None, adult: bool = False, api_key: str | N
         url,
         {"system_instruction": {"parts": [{"text": ai_system(adult)}]},
          "contents": contents,
-         "generationConfig": {"temperature": 0.88, "maxOutputTokens": 650}},
+         "generationConfig": {"temperature": 0.88, "maxOutputTokens": 900}},
     )
     parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
     return "".join(str(x.get("text") or "") for x in parts).strip()
@@ -475,7 +483,7 @@ def call_groq(prompt: str, history=None, adult: bool = False, api_key: str | Non
     data = post_json(
         "https://api.groq.com/openai/v1/chat/completions",
         {"model": GROQ_MODEL, "messages": messages(prompt, history, adult),
-         "temperature": 0.88, "max_tokens": 650},
+         "temperature": 0.88, "max_tokens": 900},
         {"Authorization": f"Bearer {api_key or GROQ_KEY}"},
     )
     return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
@@ -483,7 +491,11 @@ def call_groq(prompt: str, history=None, adult: bool = False, api_key: str | Non
 
 async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
     prompt = str(prompt or "").strip()[:1800]
-    providers = [("OpenRouter", OPENROUTER_KEY, call_openrouter)]
+    providers = [
+        (f"OpenRouter-{index}", key,
+         lambda p, h, a, selected=key: call_openrouter(p, h, a, selected))
+        for index, key in enumerate(OPENROUTER_KEYS, 1)
+    ]
     providers.extend(
         (f"Gemini-{index}", key,
          lambda p, h, a, selected=key: call_gemini(p, h, a, selected))
