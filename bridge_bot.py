@@ -592,10 +592,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.effective_message
     if not message or not update.effective_chat:
         return
-    if update.effective_chat.type != "private":
-        await message.reply_text("🔒 VIP mode केवल Sakhi की private chat में उपलब्ध है।")
-        return
-
+    # VIP mode works in private chats and groups. Confirmation remains per user.
     args = list(context.args or [])
     if not context.user_data.get("vip_18_verified"):
         if args and args[0].lower() == "confirm18":
@@ -613,8 +610,9 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     question = " ".join(args).strip()
     if not question:
         await message.reply_text(
-            "👑 VIP mode active है। अब normal private message भेजें या "
-            "`/vip आपका message` लिखें। बंद करने के लिए /vipoff।",
+            "👑 VIP mode active है। Private chat में normal message भेजें; "
+            "group में Sakhi को reply/mention करें या `/vip आपका message` लिखें। "
+            "बंद करने के लिए /vipoff।",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
