@@ -86,6 +86,17 @@ async def _ask_ai(prompt: str, quiz_module, mode: str) -> str:
             "\n\nYou are Study Planner Pro: produce a practical time-boxed NEET plan "
             "with revision, questions, breaks and a measurable finish line."
         )
+    elif mode == "vip":
+        system += (
+            "\n\nYou are RATHOD VIP, an adults-only romantic roleplay companion. "
+            "Every participant must be a consenting adult aged 18 or older. "
+            "Reply in Hindi, Hinglish, or English to match the user. Be charming, "
+            "intimate, playful, seductive, and bold when requested. Never involve "
+            "minors or age-ambiguous characters, coercion, blackmail, intoxicated "
+            "consent, incest, bestiality, stalking, or sexual impersonation of a "
+            "real person. Respect boundaries immediately, stop when asked, never "
+            "claim to be human, and never encourage emotional dependency."
+        )
     else:
         system += (
             "\n\nYou are RATHOD Guide: answer app-navigation and feature questions "
@@ -160,6 +171,51 @@ async def _cmd_ai(update, context: ContextTypes.DEFAULT_TYPE, *, mode: str, db_m
         await _send_long(update.effective_message, answer)
     except Exception as exc:
         await wait.edit_text("❌ AI response नहीं मिल पाया।\nकारण: " + str(exc)[:240])
+
+
+async def _cmd_vip(update, context: ContextTypes.DEFAULT_TYPE, *, db_module, quiz_module):
+    """Run the private, self-confirmed 18+ VIP conversation mode."""
+    if not await _ensure_active(update, db_module):
+        return
+    if not update.effective_chat or update.effective_chat.type != "private":
+        await update.effective_message.reply_text(
+            "🔒 VIP mode केवल private chat में उपलब्ध है।"
+        )
+        return
+
+    args = list(context.args or [])
+    verified = bool(context.user_data.get("vip_18_verified"))
+    if not verified:
+        if args and args[0].lower() == "confirm18":
+            context.user_data["vip_18_verified"] = True
+            args = args[1:]
+        else:
+            await update.effective_message.reply_text(
+                "🔞 VIP mode केवल 18+ consenting adults के लिए है।\n\n"
+                "यदि आपकी उम्र 18 वर्ष या अधिक है, भेजें:\n"
+                "`/vip confirm18 आपका message`",
+                parse_mode="Markdown",
+            )
+            return
+
+    question = " ".join(args).strip()
+    if not question:
+        await update.effective_message.reply_text(
+            "VIP mode active है। Use: `/vip आपका message`",
+            parse_mode="Markdown",
+        )
+        return
+
+    wait = await update.effective_message.reply_text("👑 VIP AI सोच रहा है…")
+    try:
+        answer = await _ask_ai(question, quiz_module, "vip")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await _send_long(update.effective_message, answer)
+    except Exception as exc:
+        await wait.edit_text("❌ VIP response नहीं मिला।\nकारण: " + str(exc)[:240])
 
 
 async def _cmd_highlevel(update, context: ContextTypes.DEFAULT_TYPE, *, db_module, quiz_module, vip_commands):
@@ -303,6 +359,7 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
     application.add_handler(CommandHandler("ask", partial(_cmd_ai, mode="guide", db_module=db_module, quiz_module=quiz_module)))
     application.add_handler(CommandHandler("tutor", partial(_cmd_ai, mode="tutor", db_module=db_module, quiz_module=quiz_module)))
     application.add_handler(CommandHandler("plan", partial(_cmd_ai, mode="plan", db_module=db_module, quiz_module=quiz_module)))
+    application.add_handler(CommandHandler("vip", partial(_cmd_vip, db_module=db_module, quiz_module=quiz_module)))
     application.add_handler(CommandHandler("highlevel", partial(_cmd_highlevel, db_module=db_module, quiz_module=quiz_module, vip_commands=vip_commands)))
     application.add_handler(CommandHandler("notify", partial(_cmd_notify, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("coupon", partial(_cmd_coupon, admin_ids=admin_ids)))
@@ -315,6 +372,7 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
         BotCommand("ask", "Ask RATHOD Guide"),
         BotCommand("tutor", "AI Tutor Pro"),
         BotCommand("plan", "Personal NEET study plan"),
+        BotCommand("vip", "Private 18+ VIP conversation"),
         BotCommand("highlevel", "High-level unique quiz"),
         BotCommand("notify", "Admin group notification"),
         BotCommand("coupon", "Admin coupon announcement"),
