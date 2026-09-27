@@ -118,9 +118,9 @@ async def private_support_relay(update: Update, context: ContextTypes.DEFAULT_TY
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
 
     user_id = user.id
-    # Let every slash command continue to its normal CommandHandler. Plain private
-    # messages still use the support relay below.
-    if command.startswith("/"):
+    if command == "/link":
+        return
+    if command == "/broadcast" and user_id in ADMIN_IDS:
         return
 
     # The admin replies directly to the user's forwarded/copied support message.
