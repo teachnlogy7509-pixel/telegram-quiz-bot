@@ -546,49 +546,117 @@ async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
     return offline_reply(prompt)
 
 
-def _call_gemini_vision(
-    image_bytes: bytes, mime_type: str, prompt: str, history=None, *, api_key: str
-) -> str:
-    model = parse.quote(GEMINI_MODEL, safe="")
-    key = parse.quote(api_key, safe="")
-    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
-    system = ai_system(adult=True) + (
-        " Image ko dhyan se samjho aur user ke caption/sawal ka jawab do. "
+def _vision_system() -> str:
+    return ai_system(adult=True) + (
+        " Image ko dhyan se samjho aur user ke caption/sawal ka seedha jawab do. "
         "Adult sexual image ho to sirf self-confirmed adult context mein describe ya discuss kar sakti ho. "
         "Agar koi vyakti minor lage ya umra spasht na ho, sexual analysis bilkul mat karo. "
         "Kisi real person ki identity guess mat karo aur hidden details invent mat karo."
     )
+
+
+def _call_openrouter_vision(
+    image_bytes: bytes, mime_type: str, prompt: str, *, api_key: str
+) -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    data = post_json(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+            "model": OPENROUTER_MODEL,
+            "messages": [
+                {"role": "system", "content": _vision_system()},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
+                    ],
+                },
+            ],
+            "temperature": 0.75,
+            "max_tokens": 900,
+        },
+        {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/",
+            "X-Title": BOT_NAME,
+        },
+    )
+    return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+
+def _call_gemini_vision(
+    image_bytes: bytes, mime_type: str, prompt: str, *, api_key: str, model_name: str
+) -> str:
+    model = parse.quote(model_name, safe="")
+    key = parse.quote(api_key, safe="")
+    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
     parts = [
-        {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode("ascii")}},
+        {"inlineData": {"mimeType": mime_type, "data": base64.b64encode(image_bytes).decode("ascii")}},
         {"text": prompt},
     ]
     data = post_json(
         url,
         {
-            "system_instruction": {"parts": [{"text": system}]},
+            "systemInstruction": {"parts": [{"text": _vision_system()}]},
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"temperature": 0.75, "maxOutputTokens": 900},
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
         },
     )
-    output_parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-    return "".join(str(item.get("text") or "") for item in output_parts).strip()
+    candidates = data.get("candidates") or []
+    output_parts = (((candidates or [{}])[0].get("content") or {}).get("parts") or [])
+    answer = "".join(str(item.get("text") or "") for item in output_parts).strip()
+    if not answer:
+        reason = str((data.get("promptFeedback") or {}).get("blockReason") or "empty model response")
+        if candidates:
+            reason = str(candidates[0].get("finishReason") or reason)
+        raise RuntimeError(reason)
+    return answer
 
 
 async def ask_image_ai(image_bytes: bytes, mime_type: str, prompt: str) -> str:
-    last_error = None
-    for index, key in enumerate(GEMINI_KEYS, 1):
+    errors = []
+    for index, key in enumerate(OPENROUTER_KEYS, 1):
         if not key:
             continue
         try:
             answer = await asyncio.to_thread(
-                _call_gemini_vision, image_bytes, mime_type, prompt, api_key=key
+                _call_openrouter_vision, image_bytes, mime_type, prompt, api_key=key
             )
             if answer:
                 return re.sub(r"\*+", "", answer).strip()[:3900]
         except Exception as exc:
-            last_error = exc
-            log.warning("Gemini-%s image vision failed: %s", index, str(exc)[:180])
-    raise RuntimeError(f"Image vision unavailable: {last_error or 'Gemini key missing'}")
+            errors.append(f"OpenRouter-{index}: {str(exc)[:120]}")
+            log.warning("OpenRouter-%s image vision failed: %s", index, str(exc)[:180])
+
+    vision_models = []
+    for model_name in (os.getenv("GEMINI_VISION_MODEL", "").strip(), GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.0-flash"):
+        if model_name and model_name not in vision_models:
+            vision_models.append(model_name)
+    for index, key in enumerate(GEMINI_KEYS, 1):
+        if not key:
+            continue
+        for model_name in vision_models:
+            try:
+                answer = await asyncio.to_thread(
+                    _call_gemini_vision, image_bytes, mime_type, prompt,
+                    api_key=key, model_name=model_name
+                )
+                if answer:
+                    return re.sub(r"\*+", "", answer).strip()[:3900]
+            except Exception as exc:
+                errors.append(f"Gemini-{index}/{model_name}: {str(exc)[:120]}")
+                log.warning(
+                    "Gemini-%s/%s image vision failed: %s",
+                    index, model_name, str(exc)[:180]
+                )
+    raise RuntimeError("; ".join(errors[-4:]) or "No vision provider key configured")
 
 
 async def vip_image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
