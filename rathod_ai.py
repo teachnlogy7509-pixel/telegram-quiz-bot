@@ -192,15 +192,21 @@ async def _handle_image(update, context: ContextTypes.DEFAULT_TYPE, *, db_module
     if not await _ensure_active(update, db_module):
         return
     message = update.effective_message
-    if not message or not message.photo:
+    chat = update.effective_chat
+    if not message or not message.photo or not chat or chat.type != "private":
         return
 
-    wait = await message.reply_text("🖼️ RATHOD SAKHI image देख रही है…")
+    caption = (message.caption or "").strip()
+    command = caption.split(maxsplit=1)[0].split("@", 1)[0].lower() if caption else ""
+    if command != "/vipimage":
+        return
+
+    wait = await message.reply_text("🖼️ RATHOD SAKHI VIP image देख रही है…")
     try:
         photo = message.photo[-1]
         tg_file = await context.bot.get_file(photo.file_id)
         image_bytes = bytes(await tg_file.download_as_bytearray())
-        prompt = (message.caption or "इस image में क्या है? विस्तार से लेकिन साफ़ तरीके से बताओ।").strip()
+        prompt = caption.split(maxsplit=1)[1].strip() if len(caption.split(maxsplit=1)) > 1 else "इस image में क्या है? विस्तार से लेकिन साफ़ तरीके से बताओ।"
         answer = await _analyze_image(image_bytes, "image/jpeg", prompt, quiz_module)
         try:
             await wait.delete()
@@ -233,6 +239,18 @@ async def _cmd_ai(update, context: ContextTypes.DEFAULT_TYPE, *, mode: str, db_m
         await _send_long(update.effective_message, answer)
     except Exception as exc:
         await wait.edit_text("❌ AI response नहीं मिल पाया।\nकारण: " + str(exc)[:240])
+
+
+async def _cmd_vipimage(update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        await update.effective_message.reply_text("🔒 /vipimage केवल RATHOD SAKHI की private chat में काम करता है।")
+        return
+    await update.effective_message.reply_text(
+        "👑 VIP Image Vision\n\nPhoto भेजते समय caption में `/vipimage` लिखें। "
+        "सवाल भी जोड़ सकते हैं, जैसे: `/vipimage इस question को solve करो`",
+        parse_mode="Markdown",
+    )
 
 
 async def _cmd_highlevel(update, context: ContextTypes.DEFAULT_TYPE, *, db_module, quiz_module, vip_commands):
@@ -380,6 +398,7 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
     application.add_handler(CommandHandler("notify", partial(_cmd_notify, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("coupon", partial(_cmd_coupon, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("bonusxp", partial(_cmd_bonusxp, admin_ids=admin_ids)))
+    application.add_handler(CommandHandler("vipimage", _cmd_vipimage))
     application.add_handler(
         MessageHandler(filters.PHOTO, partial(_handle_image, db_module=db_module, quiz_module=quiz_module))
     )
@@ -395,5 +414,6 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
         BotCommand("notify", "Admin group notification"),
         BotCommand("coupon", "Admin coupon announcement"),
         BotCommand("bonusxp", "Admin bonus XP"),
+        BotCommand("vipimage", "Private VIP image vision"),
     ]
     await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
