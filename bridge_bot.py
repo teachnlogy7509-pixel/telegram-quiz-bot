@@ -5,6 +5,7 @@ Online AI order: OpenRouter -> Gemini -> Groq. If all fail, local offline reply.
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
 import io
 import json
@@ -58,6 +59,18 @@ GROQ_KEYS = [
 ]
 GROQ_KEY = GROQ_KEYS[0] if GROQ_KEYS else ""
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+PRIVATE_START_SEEN: set[int] = set()
+
+
+def bridge_admin_ids() -> set[int]:
+    raw = os.getenv("BRIDGE_ADMIN_IDS") or os.getenv("ADMIN_IDS") or ""
+    result: set[int] = set()
+    for value in raw.replace(",", " ").split():
+        try:
+            result.add(int(value.strip()))
+        except ValueError:
+            pass
+    return result
 IST = timezone(timedelta(hours=5, minutes=30))
 
 MOTIVATION_LINES = [
@@ -533,6 +546,115 @@ async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
     return offline_reply(prompt)
 
 
+def _call_gemini_vision(
+    image_bytes: bytes, mime_type: str, prompt: str, history=None, *, api_key: str
+) -> str:
+    model = parse.quote(GEMINI_MODEL, safe="")
+    key = parse.quote(api_key, safe="")
+    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
+    system = ai_system(adult=True) + (
+        " Image ko dhyan se samjho aur user ke caption/sawal ka jawab do. "
+        "Adult sexual image ho to sirf self-confirmed adult context mein describe ya discuss kar sakti ho. "
+        "Agar koi vyakti minor lage ya umra spasht na ho, sexual analysis bilkul mat karo. "
+        "Kisi real person ki identity guess mat karo aur hidden details invent mat karo."
+    )
+    parts = [
+        {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode("ascii")}},
+        {"text": prompt},
+    ]
+    data = post_json(
+        url,
+        {
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"temperature": 0.75, "maxOutputTokens": 900},
+        },
+    )
+    output_parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+    return "".join(str(item.get("text") or "") for item in output_parts).strip()
+
+
+async def ask_image_ai(image_bytes: bytes, mime_type: str, prompt: str) -> str:
+    last_error = None
+    for index, key in enumerate(GEMINI_KEYS, 1):
+        if not key:
+            continue
+        try:
+            answer = await asyncio.to_thread(
+                _call_gemini_vision, image_bytes, mime_type, prompt, api_key=key
+            )
+            if answer:
+                return re.sub(r"\*+", "", answer).strip()[:3900]
+        except Exception as exc:
+            last_error = exc
+            log.warning("Gemini-%s image vision failed: %s", index, str(exc)[:180])
+    raise RuntimeError(f"Image vision unavailable: {last_error or 'Gemini key missing'}")
+
+
+async def vip_image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat or chat.type != "private":
+        return
+    if not context.user_data.get("vip_18_verified"):
+        await message.reply_text(
+            "🔞 Image समझने के लिए पहले 18+ VIP mode activate करें: /vip confirm18",
+            do_quote=True,
+        )
+        return
+
+    media = message.photo[-1] if message.photo else message.document
+    if not media:
+        return
+    if getattr(media, "file_size", 0) and int(media.file_size) > 15 * 1024 * 1024:
+        await message.reply_text("Image 15 MB से छोटी भेजिए।", do_quote=True)
+        return
+    mime_type = getattr(media, "mime_type", None) or "image/jpeg"
+    prompt = (message.caption or "इस तस्वीर को ध्यान से देखकर बताओ कि इसमें क्या है।").strip()
+    status = await message.reply_text("👁️ VIP image समझ रही हूँ…", do_quote=True)
+    try:
+        tg_file = await context.bot.get_file(media.file_id)
+        image_bytes = bytes(await tg_file.download_as_bytearray())
+        answer = await ask_image_ai(image_bytes, mime_type, prompt)
+        await status.edit_text(answer)
+    except Exception as exc:
+        log.exception("VIP image analysis failed")
+        await status.edit_text("अभी image समझ नहीं पाई। थोड़ी देर बाद फिर भेजिए।")
+
+
+async def start_private(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or chat.type != "private":
+        return
+    username = f"@{user.username}" if user.username else "नहीं है"
+    await message.reply_text(
+        "💙 RATHOD SAKHI में आपका स्वागत है!\n\n"
+        f"👤 नाम: {user.full_name or 'Telegram User'}\n"
+        f"🔗 Username: {username}\n"
+        f"🆔 Telegram ID: {user.id}\n\n"
+        "🔞 18+ VIP mode: /vip confirm18\n"
+        "VIP active होने के बाद private chat में कोई भी photo भेजिए—मैं उसे समझकर जवाब दूँगी।"
+    )
+    if user.id not in PRIVATE_START_SEEN:
+        PRIVATE_START_SEEN.add(user.id)
+        notice = (
+            "🆕 NEW RATHOD SAKHI USER\n\n"
+            f"👤 नाम: {user.full_name or 'Telegram User'}\n"
+            f"🔗 Username: {username}\n"
+            f"🆔 Telegram ID: {user.id}\n"
+            "✅ User ने private chat में /start किया।"
+        )
+        for admin_id in bridge_admin_ids():
+            if admin_id == user.id:
+                continue
+            try:
+                await context.bot.send_message(admin_id, notice)
+            except Exception:
+                log.exception("New Sakhi user notice failed for admin %s", admin_id)
+
+
 def _memory_key(update: Update) -> tuple[int, int]:
     chat_id = int(update.effective_chat.id) if update.effective_chat else 0
     user_id = int(update.effective_user.id) if update.effective_user else 0
@@ -598,7 +720,9 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.effective_message
     if not message or not update.effective_chat:
         return
-    # VIP mode works in private chats and groups. Confirmation remains per user.
+    if update.effective_chat.type != "private":
+        await message.reply_text("🔒 18+ VIP mode केवल RATHOD SAKHI की private chat में काम करता है।")
+        return
     args = list(context.args or [])
     if not context.user_data.get("vip_18_verified"):
         if args and args[0].lower() == "confirm18":
@@ -616,8 +740,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     question = " ".join(args).strip()
     if not question:
         await message.reply_text(
-            "👑 VIP mode active है। Private chat में normal message भेजें; "
-            "group में Sakhi को reply/mention करें या `/vip आपका message` लिखें। "
+            "👑 VIP mode active है। अब private chat में normal message या कोई भी photo भेजें। "
             "बंद करने के लिए /vipoff।",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -967,13 +1090,14 @@ def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off))
+    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS
         & (filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.ANIMATION | filters.AUDIO),
         group_media_moderation,
     ))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.Document.IMAGE), vip_image_message))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, chat_message))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, group_activity))
     log.info("%s started; OpenRouter=%s Gemini=%s Groq=%s; daily motivation=%02d:00 IST", BOT_NAME, bool(OPENROUTER_KEY), bool(GEMINI_KEY), bool(GROQ_KEY), MOTIVATION_HOUR)

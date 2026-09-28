@@ -114,11 +114,11 @@ async def private_support_relay(update: Update, context: ContextTypes.DEFAULT_TY
     if not message or not user:
         raise ApplicationHandlerStop
 
-    text = (message.text or message.caption or "").strip() if message else ""
+    text = (message.text or "").strip() if message else ""
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
 
     user_id = user.id
-    if command in {"/link", "/vipimage"}:
+    if command == "/link":
         return
     if command == "/broadcast" and user_id in ADMIN_IDS:
         return
@@ -151,33 +151,13 @@ async def private_support_relay(update: Update, context: ContextTypes.DEFAULT_TY
         raise ApplicationHandlerStop
 
     if command == "/start":
-        is_new_user = db.get_user(user.id, chat.id) is None
-        db.ensure_user(user.id, chat.id, user.username or "", user.full_name or "Telegram User")
-        username = f"@{user.username}" if user.username else "नहीं है"
         await message.reply_text(
-            "👑 RATHOD SAKHI में आपका स्वागत है!\n\n"
-            f"👤 नाम: {user.full_name or 'Telegram User'}\n"
-            f"🔗 Username: {username}\n"
-            f"🆔 Telegram ID: {user.id}\n\n"
-            "🖼️ VIP Image Vision: private chat में photo के caption में /vipimage लिखें।\n"
-            "💬 सामान्य message privately admin team तक पहुँच जाएगा।\n"
-            "🔗 RATHOD HUB account जोड़ने के लिए: /link CODE"
+            "🙏 नमस्ते! यह bot का private Help Desk है।\n\n"
+            "अपना सवाल या message सीधे यहाँ भेजिए। वह privately admin तक पहुँच जाएगा। "
+            "Admin का reply भी इसी chat में आएगा।\n\n"
+            "🔗 Rathod Hub account जोड़ने के लिए: /link CODE\n\n"
+            "Quiz और बाकी commands केवल group में काम करते हैं।"
         )
-        if is_new_user:
-            notice = (
-                "🆕 NEW RATHOD SAKHI USER\n\n"
-                f"👤 नाम: {user.full_name or 'Telegram User'}\n"
-                f"🔗 Username: {username}\n"
-                f"🆔 Telegram ID: {user.id}\n"
-                "✅ User ने private chat में /start किया।"
-            )
-            for admin_id in ADMIN_IDS:
-                if int(admin_id) == int(user.id):
-                    continue
-                try:
-                    await context.bot.send_message(chat_id=admin_id, text=notice)
-                except Exception:
-                    logger.exception("New-user notice failed for admin %s", admin_id)
         raise ApplicationHandlerStop
 
     # Every other private message is delivered separately to every configured admin.

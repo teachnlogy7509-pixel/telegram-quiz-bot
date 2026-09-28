@@ -8,7 +8,7 @@ from functools import partial
 
 from google.genai import types as genai_types
 from telegram import BotCommand
-from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import CommandHandler, ContextTypes
 
 import supabase_sync
 
@@ -138,85 +138,6 @@ async def _ask_ai(prompt: str, quiz_module, mode: str) -> str:
     raise RuntimeError("AI providers unavailable: " + detail)
 
 
-async def _analyze_image(image_bytes: bytes, mime_type: str, prompt: str, quiz_module) -> str:
-    """Analyze a Telegram image with Gemini vision using the existing key/model failover."""
-    keys = list(getattr(quiz_module, "_api_keys", lambda: [])())
-    if not keys:
-        raise RuntimeError("No Gemini API key is configured.")
-
-    slots = []
-    working = getattr(quiz_module, "_working_slot", None)
-    if working:
-        slots.append(working)
-    for slot in getattr(quiz_module, "CANDIDATE_SLOTS", []):
-        if slot not in slots:
-            slots.append(slot)
-
-    instruction = (
-        "You are RATHOD SAKHI's image assistant. Carefully inspect the attached image. "
-        "Answer the user's request in the same language (Hindi/Hinglish/English). "
-        "If there is readable text, a study question, diagram, object, place, plant, animal, "
-        "document or screenshot, identify and explain it accurately. Never guess hidden or "
-        "unclear details; clearly say when something cannot be determined from the image. "
-        "Do not identify a real person or infer sensitive traits. Keep the answer useful and concise.\n\n"
-        "USER REQUEST: " + prompt
-    )
-    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-    errors = []
-    for key_index in range(len(keys)):
-        for slot in slots:
-            try:
-                client = quiz_module._get_client(slot.api_version, key_index)
-
-                def generate():
-                    return client.models.generate_content(
-                        model=slot.model,
-                        contents=[image_part, instruction],
-                        config=genai_types.GenerateContentConfig(max_output_tokens=2500),
-                    )
-
-                response = await asyncio.to_thread(generate)
-                answer = str(getattr(response, "text", "") or "").strip()
-                if answer:
-                    quiz_module._working_slot = slot
-                    return answer
-            except Exception as exc:
-                errors.append(str(exc)[:160])
-
-    detail = errors[-1] if errors else "No vision-capable Gemini model is available."
-    raise RuntimeError("Image analysis unavailable: " + detail)
-
-
-async def _handle_image(update, context: ContextTypes.DEFAULT_TYPE, *, db_module, quiz_module):
-    """Describe or answer questions about any photo sent to the bot."""
-    if not await _ensure_active(update, db_module):
-        return
-    message = update.effective_message
-    chat = update.effective_chat
-    if not message or not message.photo or not chat or chat.type != "private":
-        return
-
-    caption = (message.caption or "").strip()
-    command = caption.split(maxsplit=1)[0].split("@", 1)[0].lower() if caption else ""
-    if command != "/vipimage":
-        return
-
-    wait = await message.reply_text("🖼️ RATHOD SAKHI VIP image देख रही है…")
-    try:
-        photo = message.photo[-1]
-        tg_file = await context.bot.get_file(photo.file_id)
-        image_bytes = bytes(await tg_file.download_as_bytearray())
-        prompt = caption.split(maxsplit=1)[1].strip() if len(caption.split(maxsplit=1)) > 1 else "इस image में क्या है? विस्तार से लेकिन साफ़ तरीके से बताओ।"
-        answer = await _analyze_image(image_bytes, "image/jpeg", prompt, quiz_module)
-        try:
-            await wait.delete()
-        except Exception:
-            pass
-        await _send_long(message, answer)
-    except Exception as exc:
-        await wait.edit_text("❌ Image समझने में समस्या हुई।\nकारण: " + str(exc)[:240])
-
-
 async def _cmd_ai(update, context: ContextTypes.DEFAULT_TYPE, *, mode: str, db_module, quiz_module):
     if not await _ensure_active(update, db_module):
         return
@@ -239,18 +160,6 @@ async def _cmd_ai(update, context: ContextTypes.DEFAULT_TYPE, *, mode: str, db_m
         await _send_long(update.effective_message, answer)
     except Exception as exc:
         await wait.edit_text("❌ AI response नहीं मिल पाया।\nकारण: " + str(exc)[:240])
-
-
-async def _cmd_vipimage(update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.type != "private":
-        await update.effective_message.reply_text("🔒 /vipimage केवल RATHOD SAKHI की private chat में काम करता है।")
-        return
-    await update.effective_message.reply_text(
-        "👑 VIP Image Vision\n\nPhoto भेजते समय caption में `/vipimage` लिखें। "
-        "सवाल भी जोड़ सकते हैं, जैसे: `/vipimage इस question को solve करो`",
-        parse_mode="Markdown",
-    )
 
 
 async def _cmd_highlevel(update, context: ContextTypes.DEFAULT_TYPE, *, db_module, quiz_module, vip_commands):
@@ -398,10 +307,6 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
     application.add_handler(CommandHandler("notify", partial(_cmd_notify, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("coupon", partial(_cmd_coupon, admin_ids=admin_ids)))
     application.add_handler(CommandHandler("bonusxp", partial(_cmd_bonusxp, admin_ids=admin_ids)))
-    application.add_handler(CommandHandler("vipimage", _cmd_vipimage))
-    application.add_handler(
-        MessageHandler(filters.PHOTO, partial(_handle_image, db_module=db_module, quiz_module=quiz_module))
-    )
 
     existing = await application.bot.get_my_commands()
     known = {item.command for item in existing}
@@ -414,6 +319,5 @@ async def install(application, db_module, quiz_module, vip_commands, admin_ids):
         BotCommand("notify", "Admin group notification"),
         BotCommand("coupon", "Admin coupon announcement"),
         BotCommand("bonusxp", "Admin bonus XP"),
-        BotCommand("vipimage", "Private VIP image vision"),
     ]
     await application.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])

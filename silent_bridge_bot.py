@@ -152,6 +152,7 @@ async def gated_poll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
+        BotCommand("start", "Welcome and Telegram details"),
         BotCommand("about", "RATHOD SAKHI के बारे में"),
         BotCommand("bridgehelp", "Sakhi के features"),
         BotCommand("bol", "Sakhi से बात करें"),
@@ -178,6 +179,7 @@ def main() -> None:
     base.process_events = app_notifications_only
     base.score_text = all_score_text
     app = Application.builder().token(base.BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler("start", gated(base.start_private)))
     app.add_handler(CommandHandler("about", gated(base.about)))
     app.add_handler(CommandHandler("bridgehelp", gated(bridge_help)))
     app.add_handler(CommandHandler("bol", gated(base.ask_command)))
@@ -187,6 +189,7 @@ def main() -> None:
     app.add_handler(CommandHandler("archivepdf", gated(archivepdf)))
     app.add_handler(CommandHandler("sakhi_notify", gated(sakhi_notify)))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, gated(base.welcome)))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.Document.IMAGE), gated(base.vip_image_message)))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, gated(base.chat_message)))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, gated(base.group_activity)))
     base.log.info("Sakhi configured: archive PDFs, max two shayari/day, duplicate guard")
