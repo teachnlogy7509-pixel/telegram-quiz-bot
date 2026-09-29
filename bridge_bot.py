@@ -753,11 +753,90 @@ async def vip_image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         tg_file = await context.bot.get_file(media.file_id)
         image_bytes = bytes(await tg_file.download_as_bytearray())
-        answer = await ask_image_ai(image_bytes, mime_type, prompt)
+        analysis = await ask_image_ai(image_bytes, mime_type, prompt)
+        key = _memory_key(update)
+        async with CHAT_LOCKS[key]:
+            history = list(CHAT_MEMORY[key])
+            reaction_prompt = (
+                "यूज़र ने निजी 18+ VIP चैट में एक तस्वीर भेजी है। Vision model का सुरक्षित "
+                "दृश्य-सार नीचे है। उसी सार और यूज़र के caption के आधार पर स्वाभाविक VIP "
+                "अंदाज़ में प्रतिक्रिया दो। इसे काल्पनिक consenting-adult roleplay ही रखो; खुद को "
+                "वास्तविक इंसान मत बताओ। अगर सार में उम्र अस्पष्ट/minor या मना किया गया हो तो "
+                "sexual प्रतिक्रिया मत देना।\n\n"
+                f"Caption: {prompt}\nदृश्य-सार: {analysis}"
+            )
+            answer = await ask_ai(reaction_prompt, history, adult=True)
+            CHAT_MEMORY[key].append({"role": "user", "content": f"[तस्वीर] {prompt}"})
+            CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
         await status.edit_text(answer)
     except Exception as exc:
         log.exception("VIP image analysis failed")
         await status.edit_text("अभी image समझ नहीं पाई। थोड़ी देर बाद फिर भेजिए।")
+
+
+def _generate_sakhi_picture(prompt: str, seed: int) -> bytes:
+    # Generated Sakhi pictures are intentionally non-explicit. The conversation
+    # may be 18+, but generated visual content stays glamour/romantic and adult.
+    safe_prompt = (
+        "fictional adult Indian woman, age 25, RATHOD SAKHI AI character, "
+        "elegant glamorous romantic portrait, confident playful expression, "
+        "tasteful fashionable outfit, fully clothed, no nudity, no sexual act, "
+        "cinematic soft lighting, high quality, original fictional person. " + prompt[:300]
+    )
+    model = os.getenv("SAKHI_IMAGE_MODEL", "zimage").strip() or "zimage"
+    url = (
+        "https://gen.pollinations.ai/image/" + parse.quote(safe_prompt, safe="")
+        + f"?model={parse.quote(model, safe='')}&width=768&height=1024&seed={seed}&safe=true"
+    )
+    headers = {"Accept": "image/*"}
+    image_key = os.getenv("POLLINATIONS_API_KEY", "").strip()
+    if image_key:
+        headers["Authorization"] = "Bearer " + image_key
+    with request.urlopen(request.Request(url, headers=headers), timeout=120) as response:
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        data = response.read(10 * 1024 * 1024 + 1)
+        if "image/" not in content_type or not data or len(data) > 10 * 1024 * 1024:
+            raise RuntimeError("invalid image response")
+        return data
+
+
+async def sakhi_pic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat or chat.type != "private":
+        return
+    if not context.user_data.get("vip_18_verified"):
+        await message.reply_text("पहले /vip confirm18 से निजी VIP mode activate करें।")
+        return
+    args = list(context.args or [])
+    count = 1
+    if args and args[0] in {"1", "2"}:
+        count = int(args.pop(0))
+    prompt = " ".join(args).strip() or "romantic red saree portrait, warm bedroom-style ambient lighting"
+    status = await message.reply_text(f"🎨 {count} सुरक्षित glamour photo बना रही हूँ…")
+    sent = 0
+    for _ in range(count):
+        try:
+            data = await asyncio.to_thread(
+                _generate_sakhi_picture, prompt, random.randint(1, 2_147_483_647)
+            )
+            image = io.BytesIO(data)
+            image.name = "rathod-sakhi.jpg"
+            await message.reply_photo(
+                photo=image,
+                caption="💙 काल्पनिक RATHOD SAKHI glamour portrait — non-explicit",
+            )
+            sent += 1
+        except Exception as exc:
+            log.warning("Sakhi picture generation failed: %s", str(exc)[:180])
+    if sent:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    else:
+        await status.edit_text("अभी photo generate नहीं हो पाई। थोड़ी देर बाद फिर कोशिश करें।")
+
 
 
 async def start_private(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1228,7 +1307,7 @@ def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off))
+    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CommandHandler("sakhipic", sakhi_pic))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS
