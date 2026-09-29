@@ -779,8 +779,9 @@ def _generate_sakhi_picture(prompt: str, seed: int) -> bytes:
     # may be 18+, but generated visual content stays glamour/romantic and adult.
     safe_prompt = (
         "fictional adult Indian woman, age 25, RATHOD SAKHI AI character, "
-        "elegant glamorous romantic portrait, confident playful expression, "
-        "tasteful fashionable outfit, fully clothed, no nudity, no sexual act, "
+        "elegant intimate glamour portrait, confident playful expression, "
+        "tasteful lingerie, nightwear, saree or swimwear when requested, adult sensual pose, "
+        "no visible nipples or genitals, no explicit nudity, no sexual act, "
         "cinematic soft lighting, high quality, original fictional person. " + prompt[:300]
     )
     model = os.getenv("SAKHI_IMAGE_MODEL", "zimage").strip() or "zimage"
@@ -800,6 +801,48 @@ def _generate_sakhi_picture(prompt: str, seed: int) -> bytes:
         return data
 
 
+def _is_sakhi_picture_request(text: str) -> bool:
+    low = str(text or "").casefold().strip()
+    picture_words = ("pic", "photo", "image", "tasveer", "तस्वीर", "फोटो")
+    request_words = ("bhej", "send", "dikha", "show", "भेज", "दिखा")
+    direct_phrases = (
+        "apni pic", "apni photo", "अपनी फोटो", "अपनी तस्वीर",
+        "mujhe wo dikha do", "मुझे वो दिखा दो", "mujhe dikhao", "मुझे दिखाओ",
+    )
+    return any(phrase in low for phrase in direct_phrases) or (
+        any(word in low for word in picture_words)
+        and any(word in low for word in request_words)
+    )
+
+
+async def _send_sakhi_pictures(message, prompt: str, count: int) -> None:
+    count = max(1, min(2, int(count)))
+    status = await message.reply_text(f"🎨 {count} सुरक्षित glamour photo बना रही हूँ…")
+    sent = 0
+    for _ in range(count):
+        try:
+            data = await asyncio.to_thread(
+                _generate_sakhi_picture, prompt, random.randint(1, 2_147_483_647)
+            )
+            image = io.BytesIO(data)
+            image.name = "rathod-sakhi.jpg"
+            await message.reply_photo(
+                photo=image,
+                caption="💙 काल्पनिक adult RATHOD SAKHI glamour portrait — non-explicit",
+            )
+            sent += 1
+        except Exception as exc:
+            log.warning("Sakhi picture generation failed: %s", str(exc)[:180])
+    if sent:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    else:
+        await status.edit_text("अभी photo generate नहीं हो पाई। थोड़ी देर बाद फिर कोशिश करें।")
+
+
+
 async def sakhi_pic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     chat = update.effective_chat
@@ -813,29 +856,7 @@ async def sakhi_pic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if args and args[0] in {"1", "2"}:
         count = int(args.pop(0))
     prompt = " ".join(args).strip() or "romantic red saree portrait, warm bedroom-style ambient lighting"
-    status = await message.reply_text(f"🎨 {count} सुरक्षित glamour photo बना रही हूँ…")
-    sent = 0
-    for _ in range(count):
-        try:
-            data = await asyncio.to_thread(
-                _generate_sakhi_picture, prompt, random.randint(1, 2_147_483_647)
-            )
-            image = io.BytesIO(data)
-            image.name = "rathod-sakhi.jpg"
-            await message.reply_photo(
-                photo=image,
-                caption="💙 काल्पनिक RATHOD SAKHI glamour portrait — non-explicit",
-            )
-            sent += 1
-        except Exception as exc:
-            log.warning("Sakhi picture generation failed: %s", str(exc)[:180])
-    if sent:
-        try:
-            await status.delete()
-        except Exception:
-            pass
-    else:
-        await status.edit_text("अभी photo generate नहीं हो पाई। थोड़ी देर बाद फिर कोशिश करें।")
+    await _send_sakhi_pictures(message, prompt, count)
 
 
 
@@ -912,6 +933,17 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not question:
             await message.reply_text("हाँ जी, बोलिए ना… सुन रही हूँ 😏", do_quote=True)
             return
+
+    if (
+        update.effective_chat
+        and update.effective_chat.type == "private"
+        and context.user_data.get("vip_18_verified")
+        and _is_sakhi_picture_request(question)
+    ):
+        low = question.casefold()
+        count = 2 if re.search(r"(?:^|\s)(?:2|दो)(?:\s|$)", low) or "do pic" in low else 1
+        await _send_sakhi_pictures(message, question, count)
+        return
 
     key = _memory_key(update)
     async with CHAT_LOCKS[key]:
