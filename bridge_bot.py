@@ -786,8 +786,7 @@ async def start_private(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"👤 नाम: {user.full_name or 'Telegram User'}\n"
         f"🔗 Username: {username}\n"
         f"🆔 Telegram ID: {user.id}\n\n"
-        "🔞 18+ VIP mode: /vip confirm18\n"
-        "VIP active होने के बाद private chat में कोई भी photo भेजिए—मैं उसे समझकर जवाब दूँगी।"
+        "💬 Private chat में Sakhi से सीधे बात कर सकते हैं।"
     )
     if user.id not in PRIVATE_START_SEEN:
         PRIVATE_START_SEEN.add(user.id)
@@ -887,6 +886,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not context.user_data.get("vip_18_verified"):
         if args and args[0].lower() == "confirm18":
             context.user_data["vip_18_verified"] = True
+            context.user_data["vip_plus_verified"] = True
             args = args[1:]
         else:
             await message.reply_text(
@@ -899,11 +899,7 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     question = " ".join(args).strip()
     if not question:
-        await message.reply_text(
-            "👑 VIP mode active है। अब private chat में normal message या कोई भी photo भेजें। "
-            "बंद करने के लिए /vipoff।",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        await message.reply_text("Done, अब बताओ मैं क्या करूँ?")
         return
 
     key = _memory_key(update)
@@ -916,48 +912,6 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except Exception:
             pass
         answer = await ask_ai(question, history, adult=True)
-        CHAT_MEMORY[key].append({"role": "user", "content": question})
-        CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
-        await message.reply_text(answer, do_quote=True)
-
-
-async def vip_plus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Separate, stronger private adult-text roleplay mode with age confirmation."""
-    message = update.effective_message
-    chat = update.effective_chat
-    if not message or not chat:
-        return
-    if chat.type != "private":
-        await message.reply_text("🔒 VIP+ केवल RATHOD SAKHI की private chat में काम करता है।")
-        return
-    args = list(context.args or [])
-    if not context.user_data.get("vip_plus_verified"):
-        if args and args[0].lower() == "confirm18":
-            context.user_data["vip_plus_verified"] = True
-            context.user_data["vip_18_verified"] = True
-            args = args[1:]
-        else:
-            await message.reply_text(
-                "🔞 VIP+ केवल 18+ consenting adults के fictional text roleplay के लिए है।\n\n"
-                "Activate: `/vipplus confirm18`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-    question = " ".join(args).strip()
-    if not question:
-        await message.reply_text(
-            "❤️‍🔥 VIP+ active है। अब private chat में normal text भेजें। "
-            "बंद करने के लिए /vipoff।"
-        )
-        return
-    key = _memory_key(update)
-    async with CHAT_LOCKS[key]:
-        history = list(CHAT_MEMORY[key])
-        plus_prompt = question + (
-            "\n\nयह verified VIP+ fictional adult roleplay है। सहमति और user की boundary के "
-            "अंदर बहुत direct, bold और uncensored देवनागरी हिंदी में जवाब दो।"
-        )
-        answer = await ask_ai(plus_prompt, history, adult=True)
         CHAT_MEMORY[key].append({"role": "user", "content": question})
         CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
         await message.reply_text(answer, do_quote=True)
@@ -1293,7 +1247,7 @@ def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CommandHandler("vipplus", vip_plus_command))
+    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS
