@@ -18,9 +18,9 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
 from urllib import parse, request
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", level=logging.INFO)
 log = logging.getLogger("rathod-sakhi")
@@ -369,7 +369,7 @@ async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(app: Application) -> None:
     existing = await app.bot.get_my_commands(); known = {x.command for x in existing}
-    additions = [BotCommand("about", "Who made the VIP bridge bot"), BotCommand("bridgehelp", "Bridge bot features"), BotCommand("ask", "Ask RATHOD SAKHI"), BotCommand("vip", "Private 18+ VIP mode"), BotCommand("vipoff", "Turn off VIP mode")]
+    additions = [BotCommand("about", "Who made the VIP bridge bot"), BotCommand("bridgehelp", "Bridge bot features"), BotCommand("ask", "Ask RATHOD SAKHI"), BotCommand("vip", "Private VIP mode"), BotCommand("vipoff", "Turn off VIP mode")]
     await app.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
     if app.job_queue:
         app.job_queue.run_repeating(poll_job, interval=POLL_SECONDS, first=8, name="rh-bridge-poll")
@@ -736,7 +736,7 @@ async def vip_image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     if not context.user_data.get("vip_18_verified"):
         await message.reply_text(
-            "🔞 Image समझने के लिए पहले 18+ VIP mode activate करें: /vip confirm18",
+            "पहले /vip से private VIP mode activate करें।",
             do_quote=True,
         )
         return
@@ -880,22 +880,17 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not message or not update.effective_chat:
         return
     if update.effective_chat.type != "private":
-        await message.reply_text("🔒 18+ VIP mode केवल RATHOD SAKHI की private chat में काम करता है।")
+        await message.reply_text("🔒 VIP mode केवल RATHOD SAKHI की private chat में काम करता है।")
         return
     args = list(context.args or [])
     if not context.user_data.get("vip_18_verified"):
-        if args and args[0].lower() == "confirm18":
-            context.user_data["vip_18_verified"] = True
-            context.user_data["vip_plus_verified"] = True
-            args = args[1:]
-        else:
-            await message.reply_text(
-                "🔞 VIP mode केवल 18+ consenting adults के लिए है।\n\n"
-                "अगर आपकी उम्र 18 वर्ष या अधिक है, भेजें:\n"
-                "`/vip confirm18 आपका message`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
+        await message.reply_text(
+            "VIP जारी रखने के लिए अपनी उम्र की पुष्टि करें:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("मैं 18+ हूँ", callback_data="sakhi_vip_confirm18")
+            ]]),
+        )
+        return
 
     question = " ".join(args).strip()
     if not question:
@@ -915,6 +910,20 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         CHAT_MEMORY[key].append({"role": "user", "content": question})
         CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
         await message.reply_text(answer, do_quote=True)
+
+
+async def vip_confirm_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat = update.effective_chat
+    if not query:
+        return
+    await query.answer()
+    if not chat or chat.type != "private":
+        await query.edit_message_text("VIP केवल private chat में काम करता है।")
+        return
+    context.user_data["vip_18_verified"] = True
+    context.user_data["vip_plus_verified"] = True
+    await query.edit_message_text("Done, अब बताओ मैं क्या करूँ?")
 
 
 async def vip_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1247,7 +1256,7 @@ def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off))
+    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CallbackQueryHandler(vip_confirm_button, pattern="^sakhi_vip_confirm18$"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS

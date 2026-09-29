@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import bridge_bot as base
 import master_control
@@ -157,7 +157,7 @@ async def post_init(app: Application) -> None:
         BotCommand("bridgehelp", "Sakhi के features"),
         BotCommand("bol", "Sakhi से बात करें"),
         BotCommand("resetmemory", "Sakhi की chat memory साफ करें"),
-        BotCommand("vip", "Private 18+ VIP mode"),
+        BotCommand("vip", "Private VIP mode"),
         BotCommand("vipoff", "Turn off VIP mode"),
         BotCommand("archivepdf", "Latest Notes/Test PDF"),
     ])
@@ -186,6 +186,7 @@ def main() -> None:
     app.add_handler(CommandHandler("resetmemory", gated(base.reset_memory)))
     app.add_handler(CommandHandler("vip", gated(base.vip_command)))
     app.add_handler(CommandHandler("vipoff", gated(base.vip_off)))
+    app.add_handler(CallbackQueryHandler(gated(base.vip_confirm_button), pattern="^sakhi_vip_confirm18$"))
     app.add_handler(CommandHandler("archivepdf", gated(archivepdf)))
     app.add_handler(CommandHandler("sakhi_notify", gated(sakhi_notify)))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, gated(base.welcome)))
