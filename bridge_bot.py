@@ -774,92 +774,6 @@ async def vip_image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await status.edit_text("अभी image समझ नहीं पाई। थोड़ी देर बाद फिर भेजिए।")
 
 
-def _generate_sakhi_picture(prompt: str, seed: int) -> bytes:
-    # Generated Sakhi pictures are intentionally non-explicit. The conversation
-    # may be 18+, but generated visual content stays glamour/romantic and adult.
-    safe_prompt = (
-        "fictional adult Indian woman, age 25, RATHOD SAKHI AI character, "
-        "elegant intimate glamour portrait, confident playful expression, "
-        "tasteful lingerie, nightwear, saree or swimwear when requested, adult sensual pose, "
-        "no visible nipples or genitals, no explicit nudity, no sexual act, "
-        "cinematic soft lighting, high quality, original fictional person. " + prompt[:300]
-    )
-    model = os.getenv("SAKHI_IMAGE_MODEL", "zimage").strip() or "zimage"
-    url = (
-        "https://gen.pollinations.ai/image/" + parse.quote(safe_prompt, safe="")
-        + f"?model={parse.quote(model, safe='')}&width=768&height=1024&seed={seed}&safe=true"
-    )
-    headers = {"Accept": "image/*"}
-    image_key = os.getenv("POLLINATIONS_API_KEY", "").strip()
-    if image_key:
-        headers["Authorization"] = "Bearer " + image_key
-    with request.urlopen(request.Request(url, headers=headers), timeout=120) as response:
-        content_type = str(response.headers.get("Content-Type") or "").lower()
-        data = response.read(10 * 1024 * 1024 + 1)
-        if "image/" not in content_type or not data or len(data) > 10 * 1024 * 1024:
-            raise RuntimeError("invalid image response")
-        return data
-
-
-def _is_sakhi_picture_request(text: str) -> bool:
-    low = str(text or "").casefold().strip()
-    picture_words = ("pic", "photo", "image", "tasveer", "तस्वीर", "फोटो")
-    request_words = ("bhej", "send", "dikha", "show", "भेज", "दिखा")
-    direct_phrases = (
-        "apni pic", "apni photo", "अपनी फोटो", "अपनी तस्वीर",
-        "mujhe wo dikha do", "मुझे वो दिखा दो", "mujhe dikhao", "मुझे दिखाओ",
-    )
-    return any(phrase in low for phrase in direct_phrases) or (
-        any(word in low for word in picture_words)
-        and any(word in low for word in request_words)
-    )
-
-
-async def _send_sakhi_pictures(message, prompt: str, count: int) -> None:
-    count = max(1, min(2, int(count)))
-    status = await message.reply_text(f"🎨 {count} सुरक्षित glamour photo बना रही हूँ…")
-    sent = 0
-    for _ in range(count):
-        try:
-            data = await asyncio.to_thread(
-                _generate_sakhi_picture, prompt, random.randint(1, 2_147_483_647)
-            )
-            image = io.BytesIO(data)
-            image.name = "rathod-sakhi.jpg"
-            await message.reply_photo(
-                photo=image,
-                caption="💙 काल्पनिक adult RATHOD SAKHI glamour portrait — non-explicit",
-            )
-            sent += 1
-        except Exception as exc:
-            log.warning("Sakhi picture generation failed: %s", str(exc)[:180])
-    if sent:
-        try:
-            await status.delete()
-        except Exception:
-            pass
-    else:
-        await status.edit_text("अभी photo generate नहीं हो पाई। थोड़ी देर बाद फिर कोशिश करें।")
-
-
-
-async def sakhi_pic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    chat = update.effective_chat
-    if not message or not chat or chat.type != "private":
-        return
-    if not context.user_data.get("vip_18_verified"):
-        await message.reply_text("पहले /vip confirm18 से निजी VIP mode activate करें।")
-        return
-    args = list(context.args or [])
-    count = 1
-    if args and args[0] in {"1", "2"}:
-        count = int(args.pop(0))
-    prompt = " ".join(args).strip() or "romantic red saree portrait, warm bedroom-style ambient lighting"
-    await _send_sakhi_pictures(message, prompt, count)
-
-
-
 async def start_private(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     user = update.effective_user
@@ -934,17 +848,6 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await message.reply_text("हाँ जी, बोलिए ना… सुन रही हूँ 😏", do_quote=True)
             return
 
-    if (
-        update.effective_chat
-        and update.effective_chat.type == "private"
-        and context.user_data.get("vip_18_verified")
-        and _is_sakhi_picture_request(question)
-    ):
-        low = question.casefold()
-        count = 2 if re.search(r"(?:^|\s)(?:2|दो)(?:\s|$)", low) or "do pic" in low else 1
-        await _send_sakhi_pictures(message, question, count)
-        return
-
     key = _memory_key(update)
     async with CHAT_LOCKS[key]:
         history = list(CHAT_MEMORY[key])
@@ -955,9 +858,17 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         except Exception:
             pass
+        vip_plus = bool(context.user_data.get("vip_plus_verified"))
+        ai_question = question
+        if vip_plus:
+            ai_question += (
+                "\n\nयह verified VIP+ fictional adult roleplay है। सहमति और user की boundary के "
+                "अंदर बहुत direct, bold और uncensored देवनागरी हिंदी में जवाब दो; euphemism, "
+                "lecture या शर्मीला टालना मत करो। खुद को वास्तविक इंसान मत बताओ।"
+            )
         answer = await ask_ai(
-            question, history,
-            adult=bool(context.user_data.get("vip_18_verified")),
+            ai_question, history,
+            adult=bool(context.user_data.get("vip_18_verified") or vip_plus),
         )
         CHAT_MEMORY[key].append({"role": "user", "content": question})
         CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
@@ -1010,8 +921,51 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await message.reply_text(answer, do_quote=True)
 
 
+async def vip_plus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Separate, stronger private adult-text roleplay mode with age confirmation."""
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat:
+        return
+    if chat.type != "private":
+        await message.reply_text("🔒 VIP+ केवल RATHOD SAKHI की private chat में काम करता है।")
+        return
+    args = list(context.args or [])
+    if not context.user_data.get("vip_plus_verified"):
+        if args and args[0].lower() == "confirm18":
+            context.user_data["vip_plus_verified"] = True
+            context.user_data["vip_18_verified"] = True
+            args = args[1:]
+        else:
+            await message.reply_text(
+                "🔞 VIP+ केवल 18+ consenting adults के fictional text roleplay के लिए है।\n\n"
+                "Activate: `/vipplus confirm18`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+    question = " ".join(args).strip()
+    if not question:
+        await message.reply_text(
+            "❤️‍🔥 VIP+ active है। अब private chat में normal text भेजें। "
+            "बंद करने के लिए /vipoff।"
+        )
+        return
+    key = _memory_key(update)
+    async with CHAT_LOCKS[key]:
+        history = list(CHAT_MEMORY[key])
+        plus_prompt = question + (
+            "\n\nयह verified VIP+ fictional adult roleplay है। सहमति और user की boundary के "
+            "अंदर बहुत direct, bold और uncensored देवनागरी हिंदी में जवाब दो।"
+        )
+        answer = await ask_ai(plus_prompt, history, adult=True)
+        CHAT_MEMORY[key].append({"role": "user", "content": question})
+        CHAT_MEMORY[key].append({"role": "assistant", "content": answer})
+        await message.reply_text(answer, do_quote=True)
+
+
 async def vip_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("vip_18_verified", None)
+    context.user_data.pop("vip_plus_verified", None)
     CHAT_MEMORY.pop(_memory_key(update), None)
     await update.effective_message.reply_text(
         "VIP mode बंद कर दिया है और उसकी temporary chat memory साफ कर दी है।"
@@ -1339,7 +1293,7 @@ def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CommandHandler("sakhipic", sakhi_pic))
+    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CommandHandler("vipplus", vip_plus_command))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS

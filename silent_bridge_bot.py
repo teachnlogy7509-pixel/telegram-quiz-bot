@@ -159,7 +159,7 @@ async def post_init(app: Application) -> None:
         BotCommand("resetmemory", "Sakhi की chat memory साफ करें"),
         BotCommand("vip", "Private 18+ VIP mode"),
         BotCommand("vipoff", "Turn off VIP mode"),
-        BotCommand("sakhipic", "Generate 1-2 safe Sakhi pictures"),
+        BotCommand("vipplus", "Stronger private 18+ text mode"),
         BotCommand("archivepdf", "Latest Notes/Test PDF"),
     ])
     if app.job_queue:
@@ -187,7 +187,7 @@ def main() -> None:
     app.add_handler(CommandHandler("resetmemory", gated(base.reset_memory)))
     app.add_handler(CommandHandler("vip", gated(base.vip_command)))
     app.add_handler(CommandHandler("vipoff", gated(base.vip_off)))
-    app.add_handler(CommandHandler("sakhipic", gated(base.sakhi_pic)))
+    app.add_handler(CommandHandler("vipplus", gated(base.vip_plus_command)))
     app.add_handler(CommandHandler("archivepdf", gated(archivepdf)))
     app.add_handler(CommandHandler("sakhi_notify", gated(sakhi_notify)))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, gated(base.welcome)))
