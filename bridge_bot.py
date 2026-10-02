@@ -469,45 +469,84 @@ def messages(prompt: str, history=None, adult: bool = False) -> list[dict[str, s
             + [{"role": "user", "content": prompt}])
 
 
+def _unique_models(*names: str) -> list[str]:
+    return list(dict.fromkeys(name.strip() for name in names if name and name.strip()))
+
+
 def call_openrouter(prompt: str, history=None, adult: bool = False, api_key: str | None = None) -> str:
-    data = post_json(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {"model": OPENROUTER_MODEL, "messages": messages(prompt, history, adult),
-         "temperature": 0.88, "max_tokens": 900},
-        {"Authorization": f"Bearer {api_key or OPENROUTER_KEY}",
-         "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/",
-         "X-Title": BOT_NAME},
+    # Try free models before the configured/auto model. This keeps Sakhi online when
+    # OpenRouter returns HTTP 402 because the account has no paid credits.
+    models = _unique_models(
+        os.getenv("OPENROUTER_FREE_MODEL", ""),
+        "openrouter/free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        OPENROUTER_MODEL,
     )
-    return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    last_error = None
+    for model in models:
+        try:
+            data = post_json(
+                "https://openrouter.ai/api/v1/chat/completions",
+                {"model": model, "messages": messages(prompt, history, adult),
+                 "temperature": 0.88, "max_tokens": 900},
+                {"Authorization": f"Bearer {api_key or OPENROUTER_KEY}",
+                 "HTTP-Referer": "https://teachnlogy7509-pixel.github.io/RATHOD-HUB/",
+                 "X-Title": BOT_NAME},
+            )
+            answer = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if answer:
+                return answer
+        except Exception as exc:
+            last_error = exc
+            log.warning("OpenRouter model %s failed; trying fallback: %s", model, str(exc)[:180])
+    raise RuntimeError(f"All OpenRouter models failed: {last_error}")
 
 
 def call_gemini(prompt: str, history=None, adult: bool = False, api_key: str | None = None) -> str:
-    model = parse.quote(GEMINI_MODEL, safe="")
-    key = parse.quote(api_key or GEMINI_KEY, safe="")
-    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
     contents = []
     for item in _history_messages(history):
         contents.append({"role": "model" if item["role"] == "assistant" else "user",
                          "parts": [{"text": item["content"]}]})
     contents.append({"role": "user", "parts": [{"text": prompt}]})
-    data = post_json(
-        url,
-        {"system_instruction": {"parts": [{"text": ai_system(adult)}]},
-         "contents": contents,
-         "generationConfig": {"temperature": 0.88, "maxOutputTokens": 900}},
-    )
-    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-    return "".join(str(x.get("text") or "") for x in parts).strip()
+    last_error = None
+    for model_name in _unique_models(GEMINI_MODEL, "gemini-2.5-flash-lite", "gemini-2.0-flash"):
+        try:
+            model = parse.quote(model_name, safe="")
+            key = parse.quote(api_key or GEMINI_KEY, safe="")
+            url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
+            data = post_json(
+                url,
+                {"system_instruction": {"parts": [{"text": ai_system(adult)}]},
+                 "contents": contents,
+                 "generationConfig": {"temperature": 0.88, "maxOutputTokens": 900}},
+            )
+            parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+            answer = "".join(str(x.get("text") or "") for x in parts).strip()
+            if answer:
+                return answer
+        except Exception as exc:
+            last_error = exc
+            log.warning("Gemini model %s failed; trying fallback: %s", model_name, str(exc)[:180])
+    raise RuntimeError(f"All Gemini models failed: {last_error}")
 
 
 def call_groq(prompt: str, history=None, adult: bool = False, api_key: str | None = None) -> str:
-    data = post_json(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {"model": GROQ_MODEL, "messages": messages(prompt, history, adult),
-         "temperature": 0.88, "max_tokens": 900},
-        {"Authorization": f"Bearer {api_key or GROQ_KEY}"},
-    )
-    return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    last_error = None
+    for model in _unique_models(GROQ_MODEL, "llama-3.1-8b-instant", "llama-3.3-70b-versatile"):
+        try:
+            data = post_json(
+                "https://api.groq.com/openai/v1/chat/completions",
+                {"model": model, "messages": messages(prompt, history, adult),
+                 "temperature": 0.88, "max_tokens": 900},
+                {"Authorization": f"Bearer {api_key or GROQ_KEY}"},
+            )
+            answer = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if answer:
+                return answer
+        except Exception as exc:
+            last_error = exc
+            log.warning("Groq model %s failed; trying fallback: %s", model, str(exc)[:180])
+    raise RuntimeError(f"All Groq models failed: {last_error}")
 
 
 async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
@@ -517,20 +556,22 @@ async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
             "\n\nअनिवार्य भाषा निर्देश: उत्तर केवल देवनागरी हिंदी में लिखो। "
             "रोमन हिंदी या हिंग्लिश का एक भी वाक्य मत लिखो। हर शब्द पूरा लिखो।"
         )
+    # Prefer providers with a direct free tier; OpenRouter remains available as
+    # a multi-model fallback and now tries free models before paid/auto models.
     providers = [
-        (f"OpenRouter-{index}", key,
-         lambda p, h, a, selected=key: call_openrouter(p, h, a, selected))
-        for index, key in enumerate(OPENROUTER_KEYS, 1)
-    ]
-    providers.extend(
         (f"Gemini-{index}", key,
          lambda p, h, a, selected=key: call_gemini(p, h, a, selected))
         for index, key in enumerate(GEMINI_KEYS, 1)
-    )
+    ]
     providers.extend(
         (f"Groq-{index}", key,
          lambda p, h, a, selected=key: call_groq(p, h, a, selected))
         for index, key in enumerate(GROQ_KEYS, 1)
+    )
+    providers.extend(
+        (f"OpenRouter-{index}", key,
+         lambda p, h, a, selected=key: call_openrouter(p, h, a, selected))
+        for index, key in enumerate(OPENROUTER_KEYS, 1)
     )
     for name, key, fn in providers:
         if not key:
