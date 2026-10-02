@@ -369,7 +369,7 @@ async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(app: Application) -> None:
     existing = await app.bot.get_my_commands(); known = {x.command for x in existing}
-    additions = [BotCommand("about", "Who made the VIP bridge bot"), BotCommand("bridgehelp", "Bridge bot features"), BotCommand("ask", "Ask RATHOD SAKHI"), BotCommand("vip", "Private VIP mode"), BotCommand("vipoff", "Turn off VIP mode")]
+    additions = [BotCommand("about", "Who made the VIP bridge bot"), BotCommand("bridgehelp", "Bridge bot features"), BotCommand("ask", "Ask RATHOD SAKHI"), BotCommand("vip", "VIP mode in private or group"), BotCommand("vipoff", "Turn off VIP mode"), BotCommand("aistatus", "Check Gemini, Groq and OpenRouter")]
     await app.bot.set_my_commands(list(existing) + [x for x in additions if x.command not in known])
     if app.job_queue:
         app.job_queue.run_repeating(poll_job, interval=POLL_SECONDS, first=8, name="rh-bridge-poll")
@@ -473,12 +473,36 @@ def _unique_models(*names: str) -> list[str]:
     return list(dict.fromkeys(name.strip() for name in names if name and name.strip()))
 
 
+def _usable_ai_answer(answer: str) -> bool:
+    """Reject provider moderation/debug payloads so the next model gets a chance."""
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    low = text.lower()
+    safety_markers = (
+        "user safety:", "response safety:", "safety categories:",
+        "safety category:", "content classification:", "moderation result:",
+    )
+    if sum(marker in low for marker in safety_markers) >= 2:
+        return False
+    refusal_starts = (
+        "i can't assist with sexually explicit",
+        "i cannot assist with sexually explicit",
+        "i can't engage in sexual",
+        "i cannot engage in sexual",
+        "i'm unable to comply with that request",
+    )
+    return not low.startswith(refusal_starts)
+
+
 def call_openrouter(prompt: str, history=None, adult: bool = False, api_key: str | None = None) -> str:
     # Try free models before the configured/auto model. This keeps Sakhi online when
     # OpenRouter returns HTTP 402 because the account has no paid credits.
     models = _unique_models(
         os.getenv("OPENROUTER_FREE_MODEL", ""),
         "openrouter/free",
+        "mistralai/mistral-small-3.1-24b-instruct:free",
+        "deepseek/deepseek-chat-v3-0324:free",
         "meta-llama/llama-3.3-70b-instruct:free",
         OPENROUTER_MODEL,
     )
@@ -494,8 +518,10 @@ def call_openrouter(prompt: str, history=None, adult: bool = False, api_key: str
                  "X-Title": BOT_NAME},
             )
             answer = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-            if answer:
+            if _usable_ai_answer(answer):
                 return answer
+            last_error = RuntimeError("provider returned moderation/refusal metadata")
+            log.warning("OpenRouter model %s returned unusable safety output; trying fallback", model)
         except Exception as exc:
             last_error = exc
             log.warning("OpenRouter model %s failed; trying fallback: %s", model, str(exc)[:180])
@@ -522,8 +548,10 @@ def call_gemini(prompt: str, history=None, adult: bool = False, api_key: str | N
             )
             parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
             answer = "".join(str(x.get("text") or "") for x in parts).strip()
-            if answer:
+            if _usable_ai_answer(answer):
                 return answer
+            last_error = RuntimeError("provider returned moderation/refusal metadata")
+            log.warning("Gemini model %s returned unusable safety output; trying fallback", model_name)
         except Exception as exc:
             last_error = exc
             log.warning("Gemini model %s failed; trying fallback: %s", model_name, str(exc)[:180])
@@ -541,8 +569,10 @@ def call_groq(prompt: str, history=None, adult: bool = False, api_key: str | Non
                 {"Authorization": f"Bearer {api_key or GROQ_KEY}"},
             )
             answer = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-            if answer:
+            if _usable_ai_answer(answer):
                 return answer
+            last_error = RuntimeError("provider returned moderation/refusal metadata")
+            log.warning("Groq model %s returned unusable safety output; trying fallback", model)
         except Exception as exc:
             last_error = exc
             log.warning("Groq model %s failed; trying fallback: %s", model, str(exc)[:180])
@@ -578,10 +608,11 @@ async def ask_ai(prompt: str, history=None, adult: bool = False) -> str:
             continue
         try:
             answer = await asyncio.to_thread(fn, prompt, history, adult)
-            if answer:
+            if _usable_ai_answer(answer):
                 # Telegram gets clean plain text even when a provider adds Markdown.
                 answer = re.sub(r"\*+", "", str(answer)).strip()
                 return answer[:3900]
+            log.warning("%s returned moderation/refusal text; trying next provider", name)
         except Exception as exc:
             log.warning("%s chat failed; trying next provider: %s", name, str(exc)[:180])
     return offline_reply(prompt)
@@ -915,27 +946,76 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await message.reply_text(answer, do_quote=True)
 
 
-async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Enable and use private 18+ VIP conversation after self-confirmation."""
+async def ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Live-check every configured AI provider without exposing API keys."""
     message = update.effective_message
-    if not message or not update.effective_chat:
+    if not message:
         return
-    if update.effective_chat.type != "private":
-        await message.reply_text("🔒 VIP mode केवल RATHOD SAKHI की private chat में काम करता है।")
+    wait = await message.reply_text("🔎 Gemini, Groq aur OpenRouter check kar rahi hoon…")
+
+    async def probe(name: str, keys: list[str], fn):
+        if not keys:
+            return name, False, "API key configured nahi hai", 0
+        last_error = "unknown error"
+        for index, key in enumerate(keys, 1):
+            try:
+                answer = await asyncio.wait_for(
+                    asyncio.to_thread(fn, "Reply with only: OK", [], False, key),
+                    timeout=45,
+                )
+                if _usable_ai_answer(answer):
+                    return name, True, f"key {index} working", len(keys)
+                last_error = "empty/moderation response"
+            except Exception as exc:
+                last_error = str(exc).replace("\n", " ")[:100]
+        return name, False, last_error, len(keys)
+
+    results = await asyncio.gather(
+        probe("Gemini", GEMINI_KEYS, call_gemini),
+        probe("Groq", GROQ_KEYS, call_groq),
+        probe("OpenRouter", OPENROUTER_KEYS, call_openrouter),
+    )
+    lines = ["🤖 RATHOD SAKHI AI STATUS", ""]
+    active = None
+    for name, working, detail, key_count in results:
+        icon = "✅" if working else ("⚪" if key_count == 0 else "❌")
+        lines.append(f"{icon} {name}: {detail}")
+        if working and active is None:
+            active = name
+    lines.extend(["", f"🚀 Active priority provider: {active or 'koi provider available nahi'}",
+                  "Priority: Gemini → Groq → OpenRouter"])
+    try:
+        await wait.edit_text("\n".join(lines))
+    except Exception:
+        await message.reply_text("\n".join(lines))
+
+
+async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Enable and use 18+ VIP conversation in private chat or a group."""
+    message = update.effective_message
+    if not message or not update.effective_chat or not update.effective_user:
         return
     args = list(context.args or [])
     if not context.user_data.get("vip_18_verified"):
+        visibility = (
+            "⚠️ Group में VIP replies सभी members को दिखाई देंगे।\n\n"
+            if update.effective_chat.type in {"group", "supergroup"} else ""
+        )
         await message.reply_text(
-            "VIP जारी रखने के लिए अपनी उम्र की पुष्टि करें:",
+            visibility + "VIP जारी रखने के लिए अपनी उम्र की पुष्टि करें:",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("मैं 18+ हूँ", callback_data="sakhi_vip_confirm18")
+                InlineKeyboardButton(
+                    "मैं 18+ हूँ",
+                    callback_data=f"sakhi_vip_confirm18:{update.effective_user.id}",
+                )
             ]]),
         )
         return
 
     question = " ".join(args).strip()
     if not question:
-        await message.reply_text("Done, अब बताओ मैं क्या करूँ?")
+        place = "group" if update.effective_chat.type in {"group", "supergroup"} else "private chat"
+        await message.reply_text(f"✅ VIP mode {place} में active है। अब /vip के बाद अपना message लिखो।")
         return
 
     key = _memory_key(update)
@@ -956,15 +1036,26 @@ async def vip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def vip_confirm_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     chat = update.effective_chat
-    if not query:
+    if not query or not query.from_user:
+        return
+    data = str(query.data or "")
+    expected_user = None
+    if ":" in data:
+        try:
+            expected_user = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            expected_user = None
+    if expected_user is not None and query.from_user.id != expected_user:
+        await query.answer("यह confirmation उस user के लिए है जिसने /vip चलाया था।", show_alert=True)
         return
     await query.answer()
-    if not chat or chat.type != "private":
-        await query.edit_message_text("VIP केवल private chat में काम करता है।")
-        return
     context.user_data["vip_18_verified"] = True
     context.user_data["vip_plus_verified"] = True
-    await query.edit_message_text("Done, अब बताओ मैं क्या करूँ?")
+    place = "group" if chat and chat.type in {"group", "supergroup"} else "private chat"
+    await query.edit_message_text(
+        f"✅ 18+ confirmation complete। VIP mode {place} में active है।\n"
+        "अब /vip के बाद अपना message लिखो।"
+    )
 
 
 async def vip_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1297,7 +1388,7 @@ def main() -> None:
     if not BOT_TOKEN: raise SystemExit("BRIDGE_TELEGRAM_BOT_TOKEN is missing")
     if not SUPA_URL or not SUPA_KEY: raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CallbackQueryHandler(vip_confirm_button, pattern="^sakhi_vip_confirm18$"))
+    app.add_handler(CommandHandler("start", start_private)); app.add_handler(CommandHandler("about", about)); app.add_handler(CommandHandler("bridgehelp", bridgehelp)); app.add_handler(CommandHandler("ask", ask_command)); app.add_handler(CommandHandler("resetmemory", reset_memory)); app.add_handler(CommandHandler("vip", vip_command)); app.add_handler(CommandHandler("vipoff", vip_off)); app.add_handler(CommandHandler("aistatus", ai_status)); app.add_handler(CallbackQueryHandler(vip_confirm_button, pattern=r"^sakhi_vip_confirm18(?::\d+)?$"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS
